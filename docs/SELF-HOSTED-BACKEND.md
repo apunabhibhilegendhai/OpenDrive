@@ -21,7 +21,15 @@ cannot be trusted with. The decision and its rationale are in
 ```
 
 PostgreSQL (`5432`) and Redis (`6379`) are **not** published. They exist only on the runner's
-Docker network. The single public surface is the HTTPS hostname above.
+Docker network. Two HTTPS hostnames are the entire public surface:
+
+| Hostname                          | Ingress target      | What it serves                                    | Login            |
+| --------------------------------- | ------------------- | ------------------------------------------------- | ---------------- |
+| `supabase.opendrive.indevs.in`    | `localhost:8000`    | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
+| `redis.opendrive.indevs.in`       | `localhost:8081`    | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis` |
+
+Both hostnames are Cloudflare-proxied CNAMEs to the `database` tunnel. The tunnel ingress is
+remotely managed (Cloudflare Zero Trust), not a local `cloudflared` config file.
 
 ## Where each piece lives
 
@@ -29,14 +37,34 @@ Docker network. The single public surface is the HTTPS hostname above.
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                           |
 | The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                      |
-| OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql` |
+| OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql`, `102-opendrive-harden-rls-and-grants.sql` |
 | Least-privilege role SQL           | `supabase/volumes/db/init/zz-opendrive-role.sql` (run every session by the workflow)                 |
 | CI (unchanged contract)            | `.github/workflows/ci.yml` in this repo — service containers only, no secrets                        |
 
-The migration files in the infra repo are copies of `supabase/migrations/20261010000001_*.sql`
-and `20261011000001_*.sql` here. **When a migration is added or changed in this repo, copy it into
-the infra repo's `supabase/migrations/` as well** (the infra repo's own `001`–`008` belong to an
-unrelated app that shares the instance).
+The migration files in the infra repo are copies of `supabase/migrations/20261010000001_*.sql`,
+`20261011000001_*.sql` and `20261012000001_*.sql` here. **When a migration is added or changed in
+this repo, copy it into the infra repo's `supabase/migrations/` as well** (the infra repo's own
+`001`–`008` belong to an unrelated app that shares the instance).
+
+## Security model (RLS)
+
+RLS is **enabled on every table in `public`**. The trusted OpenDrive API connects directly as the
+`opendrive_app` login role, which is granted `BYPASSRLS` because the API performs its own
+authorization (the same shape as Supabase's own `service_role`). RLS therefore exists to protect
+**direct PostgREST access** by the `anon` and `authenticated` roles:
+
+- `anon` holds **no** privileges on any OpenDrive table (defence in depth on top of RLS).
+- `authenticated` holds only the privileges its policies actually use: `SELECT, UPDATE` on
+  `profiles`, `SELECT, DELETE` on `files`/`folders`, and `SELECT` on `shares`. Every other
+  OpenDrive table (api_keys, anonymous_sessions, quota_*, usage_counters, storage_objects,
+  upload_sessions, audit_events, abuse_reports, moderation_actions) carries **no** client grant, so
+  RLS denies by default.
+- `public._schema_migrations` (the migration ledger) had RLS **disabled** and full `authenticated`
+  grants when created by the migration runner. Migration `102` revokes all client access and
+  enables RLS on it.
+
+`102-opendrive-harden-rls-and-grants.sql` is the migration that establishes this; it is idempotent
+and re-runs on a fresh database because the ledger starts empty.
 
 ## How OpenDrive gets a database role
 
