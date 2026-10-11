@@ -172,7 +172,7 @@ written and stopped being true when a portable PostgreSQL 17.6 was installed out
 repository. Supabase remains unverified: see D18 for exactly what the local proof does and does
 not cover.
 
-## D15. GitHub Actions: CI only, no secrets, no deployment
+## D15. GitHub Actions: CI only, no secrets, no deployment - **superseded by D26**
 
 **Chosen:** one workflow (`ci.yml`) with `permissions: contents: read`, running format check,
 lint, type-check, build, unit/integration tests and e2e tests; a second advisory job reports
@@ -366,3 +366,30 @@ decaying into a one-off.
 
 **Revisit when:** these suites get slow enough that a per-pull-request run costs more than it
 catches, at which point the split should be by what is at risk in the change, not by convenience.
+
+## D26. The self-hosted Supabase stack runs on GitHub Actions as the development backend
+
+**Chosen:** OpenDrive's metadata backend and Redis are provided by a self-hosted Supabase stack
+running on GitHub Actions in a separate repository, `apunlegendhai/supabase-actions`, published
+over HTTPS only through a Cloudflare Tunnel at `supabase.opendrive.indevs.in`. That workflow
+applies OpenDrive's migrations (`supabase/migrations/100-*`, `101-*`) and creates a
+least-privilege `opendrive_app` login role on every session. No raw TCP is exposed: PostgreSQL and
+Redis stay on the runner's Docker network. CI keeps using throwaway container-local services
+(`postgres:17`, `redis:7`), never the live instance.
+
+**Why:** the cost target is zero and a paid managed Supabase/Redis was ruled out. The existing
+`supabase-host.yml` stack was already present and is reused at the owner's direction, with its
+limitations recorded below rather than hidden. This supersedes D15's "no deployment" rule for
+this backend only; `ci.yml` keeps its no-secrets, read-only contract.
+
+**Known limitations (accepted):** the instance is ephemeral - a session runs about five hours out
+of every six, and state survives only through the GitHub Actions cache (7-day eviction, 10 GB
+cap), so total data loss is possible and it must never hold the only copy of anything. It is a
+development backend, not production storage. The upstream stack's workflow prints a fallback Redis
+password into a public build log; the instance here sets a real random `REDIS_PASSWORD`, so that
+fallback is never used, but the upstream source still contains the old default. Redis is also
+reachable over an ephemeral `bore.pub` relay (random port, password-gated); nothing durable is
+stored there.
+
+**Revisit when:** the backend must hold real user data, at which point it moves to a persistent,
+access-controlled host and this becomes a local development convenience only.

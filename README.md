@@ -73,14 +73,15 @@ docs/              Architecture, security, storage providers, decisions, roadmap
 
 ## Documentation
 
-| Document                                               | Contents                                                                                                    |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)           | Components, data ownership, large-file handling, reliability and backup rules                               |
-| [docs/SECURITY.md](docs/SECURITY.md)                   | Threat model, authorization, tokens, secrets, abuse controls, and what encryption can and cannot be claimed |
-| [docs/STORAGE-PROVIDERS.md](docs/STORAGE-PROVIDERS.md) | Provider capability matrix and the Telegram evaluation (experimental, not production-validated)             |
-| [docs/DECISIONS.md](docs/DECISIONS.md)                 | Why the stack and design choices were made                                                                  |
-| [docs/ROADMAP.md](docs/ROADMAP.md)                     | Phase plan and the Phase 1 prerequisites checklist                                                          |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)             | Setup, commands, testing strategy, troubleshooting                                                          |
+| Document                                                   | Contents                                                                                                    |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)               | Components, data ownership, large-file handling, reliability and backup rules                               |
+| [docs/SECURITY.md](docs/SECURITY.md)                       | Threat model, authorization, tokens, secrets, abuse controls, and what encryption can and cannot be claimed |
+| [docs/STORAGE-PROVIDERS.md](docs/STORAGE-PROVIDERS.md)     | Provider capability matrix and the Telegram evaluation (experimental, not production-validated)             |
+| [docs/SELF-HOSTED-BACKEND.md](docs/SELF-HOSTED-BACKEND.md) | The Supabase + Redis instance on GitHub Actions: topology, secrets, and its limits                          |
+| [docs/DECISIONS.md](docs/DECISIONS.md)                     | Why the stack and design choices were made                                                                  |
+| [docs/ROADMAP.md](docs/ROADMAP.md)                         | Phase plan and the Phase 1 prerequisites checklist                                                          |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)                 | Setup, commands, testing strategy, troubleshooting                                                          |
 
 ## Ground rules this project holds itself to
 
@@ -88,9 +89,10 @@ docs/              Architecture, security, storage providers, decisions, roadmap
 - Unimplemented endpoints are visible as `501`s with a named phase, never as plausible successes.
 - Test doubles are named as test doubles in code, in docs and in registry output, and the
   in-memory storage provider is refused in production.
-- Cost stays at zero beyond the existing domain: the existing VPS running Supabase and Redis, a
-  free static host for the web build, and GitHub Actions for checks only — never as a server,
-  proxy or CDN.
+- Cost stays at zero beyond the existing domain: the self-hosted Supabase and Redis instance (see
+  [docs/SELF-HOSTED-BACKEND.md](docs/SELF-HOSTED-BACKEND.md)), a free static host for the web
+  build, and GitHub Actions. Actions runs that development backend as well as the checks, but it
+  is never a CDN or a delivery path for user-uploaded bytes.
 - Telegram storage is treated as an experiment with unresolved durability, limit and
   account-risk questions, not as free unlimited object storage.
 
