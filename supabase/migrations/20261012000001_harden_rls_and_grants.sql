@@ -24,10 +24,26 @@
 
 -- ---------------------------------------------------------------------------
 -- 1. The migration ledger is bookkeeping, not an API resource.
+--
+--    `_schema_migrations` is created by the Supabase migration runner, not by a migration, so it
+--    is absent when the SQL is applied by the plain-psql harness (and by `opendrive_app`, which
+--    only exists on the self-hosted instance). Guard both, so the file is executable everywhere.
 -- ---------------------------------------------------------------------------
 
-revoke all on table public._schema_migrations from anon, authenticated, opendrive_app;
-alter table public._schema_migrations enable row level security;
+do $$
+declare
+  grantees text := 'anon, authenticated';
+begin
+  if to_regclass('public._schema_migrations') is null then
+    return;
+  end if;
+  if to_regrole('opendrive_app') is not null then
+    grantees := grantees || ', opendrive_app';
+  end if;
+  execute format('revoke all on table public._schema_migrations from %s', grantees);
+  execute 'alter table public._schema_migrations enable row level security';
+end
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 2. No OpenDrive table is reachable by the anonymous role.
