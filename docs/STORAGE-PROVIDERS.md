@@ -70,6 +70,11 @@ is enabled for real files:
    objects into parts at or below 20 MiB (default) and streams each part with bounded memory —
    no local-disk spooling is needed even for multi-gigabyte objects. Retrieval is whole-object:
    a read streams the concatenation of the parts, and ranged reads are not supported.
+   Verification (part of `finalizeUpload`) reads the parts back through a bounded window
+   (`maxVerifyConcurrency`, further capped by a byte budget) rather than one at a time, because
+   live measurement showed single-stream reads are throttled to ≈0.17 MiB/s and a sequential
+   verify would take hours at the 2 GiB target. Each part is read whole so a transient drop can
+   be retried from scratch, and every read failure is surfaced as `STORAGE_UNAVAILABLE`.
 
 ### 3.1 Optional self-hosted Local Bot API server (the route to the 2 GiB target)
 

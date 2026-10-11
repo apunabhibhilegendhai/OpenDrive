@@ -439,6 +439,32 @@ Telegram keeps serving a deleted file and how the provider compensates.
 self-hosted Local Bot API server, §3.1), at which point `maxFileSizeVerified` can be enabled and the
 measured maximum recorded here.
 
+## D30. Upload verification reads parts through a bounded window, and read failures are retryable
+
+**Chosen:** `TelegramStorageProvider.finalizeUpload` verifies the whole-object SHA-256 by reading
+staged parts back through a bounded concurrent window (`hashObjectParts` → `verifyWindowSize`), and
+each part is read whole into memory by `readPartBytes` and retried on transient failure
+(`DEFAULT_READ_RETRY_ATTEMPTS`, exponential-ish backoff via `readRetryDelayMs`). The window is capped
+by both `maxVerifyConcurrency` and a byte budget (`VERIFY_BUFFER_BUDGET_BYTES`), so a provider with a
+large part size reads fewer parts at once instead of buffering the whole object. `TelegramHttpTransport.download`
+now wraps a failure that occurs while the response body is streaming as a retryable `TelegramApiError`,
+and `TelegramStorageProvider.throwReadFailure` maps every read failure to `STORAGE_UNAVAILABLE`
+(never a raw driver error), passing already-classified `AppError`s through unchanged.
+
+**Why:** measuring the live Bot API showed the provider's original verify pass was the bottleneck for
+the 2 GiB target, not the upload. Uploads scale near-linearly with concurrency (one stream ≈ 0.24 MiB/s,
+8 parallel ≈ 2.4 MiB/s), but the original `hashObjectParts` read parts one at a time at ≈ 0.17 MiB/s, so
+verifying a 2 GiB object would take hours. A mid-body failure also escaped unclassified: `download()`
+resolves once headers arrive, so a socket dropped while iterating the body threw undici's raw
+`TypeError: terminated` straight through `finalizeUpload`. Buffering each part whole makes the retry
+correct (a partially-consumed stream cannot be resumed and a partially-hashed part cannot be rolled
+back), and the byte budget keeps memory bounded to `window × part`.
+
+**Verification record (2026-10-11):** unit tests cover a transient mid-body failure that is retried and
+still verifies, a persistent failure that surfaces as `STORAGE_UNAVAILABLE`, a mid-body failure while
+streaming to a client that also surfaces as `STORAGE_UNAVAILABLE`, the verify window staying within its
+bound, and the transport wrapping a post-header body failure as retryable.
+
 ## D28. Pagination cursors are bound as `text`, then cast, so microseconds survive
 
 **Chosen:** the keyset predicate in `listFiles` / `listFolders` casts the bound cursor parameter

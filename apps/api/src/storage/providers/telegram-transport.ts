@@ -304,8 +304,22 @@ export class TelegramHttpTransport implements TelegramTransport {
     }
     const body = response.body;
     return (async function* generate(): ByteStream {
-      for await (const chunk of body) {
-        yield chunk;
+      try {
+        for await (const chunk of body) {
+          yield chunk;
+        }
+      } catch (error) {
+        // `fetch` already resolved, so the connection dropped while the body was streaming.
+        // A raw undici `TypeError: terminated` would otherwise escape every caller's error
+        // mapping; classify it as retryable so an interrupted read can be retried.
+        if (error instanceof TelegramApiError) throw error;
+        throw new TelegramApiError(
+          `Telegram file "${filePath}" download was interrupted before it completed.`,
+          '',
+          null,
+          true,
+          error,
+        );
       }
     })();
   }

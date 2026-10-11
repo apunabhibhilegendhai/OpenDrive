@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { newId, sha256HexOfBytes } from '@opendrive/shared';
 import type { ByteStream } from '@opendrive/shared';
 import { describeStorageProviderContract } from '@opendrive/shared/storage/testing';
 import { TelegramStorageProvider } from './telegram.js';
 import {
   classifyApiError,
+  TelegramApiError,
+  TelegramHttpTransport,
   TelegramNotFoundError,
   TelegramPayloadTooLargeError,
   TelegramRateLimitedError,
@@ -53,6 +55,18 @@ class FakeTelegramTransport implements TelegramTransport {
   private nextMessageId = 1000;
   private nextFileId = 0;
 
+  /**
+   * Read-path fault injection. `transientDownloadFailures` makes that many downloads die
+   * mid-body before succeeding (mirroring a dropped Telegram connection); `alwaysFailDownloads`
+   * makes every read fail. `activeDownloads`/`maxConcurrentDownloads` observe how many reads the
+   * provider keeps in flight, which is how the verify window is asserted.
+   */
+  transientDownloadFailures = 0;
+  alwaysFailDownloads = false;
+  failureAfterChunks = 1;
+  activeDownloads = 0;
+  maxConcurrentDownloads = 0;
+
   async sendDocument(input: {
     filename: string;
     mimeType: string;
@@ -98,10 +112,28 @@ class FakeTelegramTransport implements TelegramTransport {
       throw new TelegramNotFoundError(`download: path ${filePath} not found`, 404);
     }
     const bytes = file.bytes;
+    const shouldFail = this.alwaysFailDownloads || this.transientDownloadFailures > 0;
+    if (!this.alwaysFailDownloads && this.transientDownloadFailures > 0) {
+      this.transientDownloadFailures -= 1;
+    }
+    const failureAfterChunks = this.failureAfterChunks;
+    this.activeDownloads += 1;
+    this.maxConcurrentDownloads = Math.max(this.maxConcurrentDownloads, this.activeDownloads);
+    const release = (): void => {
+      this.activeDownloads -= 1;
+    };
     return (async function* generate(): ByteStream {
-      const step = 4096;
-      for (let offset = 0; offset < bytes.byteLength; offset += step) {
-        yield bytes.subarray(offset, Math.min(offset + step, bytes.byteLength));
+      try {
+        const step = 4096;
+        for (let offset = 0; offset < bytes.byteLength; offset += step) {
+          if (shouldFail && offset >= step * failureAfterChunks) {
+            // Mirrors the live failure mode: the response resolved, then the body died mid-stream.
+            throw new TelegramApiError('simulated mid-body drop', '', null, true);
+          }
+          yield bytes.subarray(offset, Math.min(offset + step, bytes.byteLength));
+        }
+      } finally {
+        release();
       }
     })();
   }
@@ -217,6 +249,110 @@ describe('Telegram storage provider', () => {
     await expect(transport.getFile(fileId ?? '')).resolves.toBeDefined();
     await expect(provider.getMetadata(stored.ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await expect(provider.openReadStream(stored.ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('retries a transient mid-body download failure while verifying the upload', async () => {
+    const transport = new FakeTelegramTransport();
+    // The first part read dies after one chunk, exactly as a dropped Telegram connection does.
+    transport.transientDownloadFailures = 1;
+    transport.failureAfterChunks = 1;
+    const provider = new TelegramStorageProvider({ transport, readRetryDelayMs: 0 });
+    const payload = new Uint8Array(16 * 1024);
+    for (let index = 0; index < payload.byteLength; index += 1) payload[index] = index % 251;
+    const expected = await sha256HexOfBytes(payload);
+
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, 8192));
+    for (let partNumber = 1; partNumber <= 2; partNumber += 1) {
+      await provider.uploadPart(session, {
+        partNumber,
+        source: payload.subarray((partNumber - 1) * 8192, partNumber * 8192),
+        sizeBytes: 8192,
+      });
+    }
+
+    const stored = await provider.finalizeUpload(session);
+    expect(stored.checksumSha256).toBe(expected);
+  });
+
+  it('maps a persistent download failure to STORAGE_UNAVAILABLE instead of leaking it', async () => {
+    const transport = new FakeTelegramTransport();
+    transport.alwaysFailDownloads = true;
+    transport.failureAfterChunks = 0;
+    const provider = new TelegramStorageProvider({ transport, readRetryDelayMs: 0 });
+    const session = await provider.initiateUpload(uploadInput(2048));
+    const part = new Uint8Array(1024).fill(3);
+    await provider.uploadPart(session, { partNumber: 1, source: part, sizeBytes: 1024 });
+    await provider.uploadPart(session, { partNumber: 2, source: part, sizeBytes: 1024 });
+
+    // The live failure arrived as a raw `TypeError: terminated`; it must surface classified.
+    await expect(provider.finalizeUpload(session)).rejects.toMatchObject({
+      code: 'STORAGE_UNAVAILABLE',
+    });
+  });
+
+  it('maps a mid-body download failure while streaming to STORAGE_UNAVAILABLE', async () => {
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport });
+    const payload = new Uint8Array(8192).fill(9);
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, 8192));
+    const stored = await provider.uploadWholeObject({
+      session,
+      source: (async function* generate(): ByteStream {
+        yield payload;
+      })(),
+      sizeBytes: payload.byteLength,
+    });
+
+    transport.alwaysFailDownloads = true;
+    transport.failureAfterChunks = 1;
+    const read = await provider.openReadStream(stored.ref);
+    await expect(drain(read.stream)).rejects.toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
+  });
+
+  it('verifies parts through a bounded concurrent window', async () => {
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport, maxVerifyConcurrency: 3 });
+    const partSize = 4096;
+    const partCount = 8;
+    const payload = new Uint8Array(partSize * partCount);
+    for (let index = 0; index < payload.byteLength; index += 1) payload[index] = (index * 7) % 256;
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, partSize));
+    for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
+      await provider.uploadPart(session, {
+        partNumber,
+        source: payload.subarray((partNumber - 1) * partSize, partNumber * partSize),
+        sizeBytes: partSize,
+      });
+    }
+
+    await provider.finalizeUpload(session);
+    // Reads overlap, but never more than the configured window.
+    expect(transport.maxConcurrentDownloads).toBeGreaterThan(1);
+    expect(transport.maxConcurrentDownloads).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('TelegramHttpTransport', () => {
+  it('classifies a body failure that happens after the response has resolved', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(4096).fill(1));
+        controller.error(new TypeError('terminated'));
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status: 200 })),
+    );
+    try {
+      const transport = new TelegramHttpTransport({ botToken: 'test-token', chatId: 'test-chat' });
+      const stream = await transport.download('doc/file.bin');
+      const failure = await drain(stream).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(TelegramApiError);
+      expect((failure as TelegramApiError).retryable).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

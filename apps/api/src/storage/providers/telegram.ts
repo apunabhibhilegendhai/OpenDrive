@@ -64,6 +64,13 @@ import {
 const DEFAULT_MAX_OBJECT_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB configured target
 const DEFAULT_MAX_PART_BYTES = 20 * 1024 * 1024; // standard Bot API download ceiling
 const DEFAULT_SESSION_TTL_SECONDS = 24 * 60 * 60;
+/** Transient read failures are retried this many times before the part is given up on. */
+const DEFAULT_READ_RETRY_ATTEMPTS = 4;
+const DEFAULT_READ_RETRY_DELAY_MS = 500;
+/** Cap on parts read at once while verifying, before the memory budget below is applied. */
+const DEFAULT_MAX_VERIFY_CONCURRENCY = 8;
+/** Bytes the verify pass may hold in flight; keeps a large part size from buffering the object. */
+const VERIFY_BUFFER_BUDGET_BYTES = 256 * 1024 * 1024;
 
 export interface TelegramStorageProviderOptions {
   /** Transport used for every Telegram call. Tests inject an in-memory fake. */
@@ -75,6 +82,16 @@ export interface TelegramStorageProviderOptions {
   /** Largest accepted part; also the largest single file Telegram must serve back. */
   maxPartSizeBytes?: number;
   sessionTtlSeconds?: number;
+  /** How many times a transient read failure is retried before it is surfaced. */
+  readRetryAttempts?: number;
+  /** Base backoff between read retries in milliseconds; tests pass 0 for instant retries. */
+  readRetryDelayMs?: number;
+  /**
+   * Upper bound on parts read concurrently while verifying a finalized upload. Also bounded
+   * internally by a memory budget, so a provider with a very large part size reads fewer
+   * parts at once rather than buffering the whole object.
+   */
+  maxVerifyConcurrency?: number;
   now?: () => Date;
 }
 
@@ -200,6 +217,17 @@ async function collect(source: ByteSource, maxBytes: number): Promise<Uint8Array
   return merged;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** True when Telegram reported a failure that a later attempt may survive. */
+function isRetryableTelegramError(error: unknown): boolean {
+  return error instanceof TelegramApiError && error.retryable;
+}
+
 export class TelegramStorageProvider implements StorageProvider {
   readonly providerId: string;
   readonly displayName: string;
@@ -229,6 +257,9 @@ export class TelegramStorageProvider implements StorageProvider {
   private readonly maxObjectSizeBytes: number;
   private readonly maxPartSizeBytes: number;
   private readonly sessionTtlSeconds: number;
+  private readonly readRetryAttempts: number;
+  private readonly readRetryDelayMs: number;
+  private readonly maxVerifyConcurrency: number;
   private readonly now: () => Date;
 
   constructor(options: TelegramStorageProviderOptions) {
@@ -238,6 +269,9 @@ export class TelegramStorageProvider implements StorageProvider {
     this.maxObjectSizeBytes = options.maxObjectSizeBytes ?? DEFAULT_MAX_OBJECT_BYTES;
     this.maxPartSizeBytes = options.maxPartSizeBytes ?? DEFAULT_MAX_PART_BYTES;
     this.sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
+    this.readRetryAttempts = options.readRetryAttempts ?? DEFAULT_READ_RETRY_ATTEMPTS;
+    this.readRetryDelayMs = options.readRetryDelayMs ?? DEFAULT_READ_RETRY_DELAY_MS;
+    this.maxVerifyConcurrency = options.maxVerifyConcurrency ?? DEFAULT_MAX_VERIFY_CONCURRENCY;
     this.now = options.now ?? (() => new Date());
     this.capabilities = {
       multipartUpload: true,
@@ -524,14 +558,113 @@ export class TelegramStorageProvider implements StorageProvider {
     return this.commitUpload(upload, ordered, checksum);
   }
 
+  /**
+   * Verifies the whole-object checksum by reading every staged part back through Telegram.
+   *
+   * Parts are read through a bounded window and each part is buffered whole before hashing, for
+   * two reasons measured against the live Bot API: reads are throttled to well under a MiB/s per
+   * connection, so a strictly sequential verify would take hours on a multi-GiB object; and a
+   * stream cannot be rewound, so a retry is only safe when the whole part is re-read from the
+   * start rather than spliced into an in-progress hash.
+   */
   private async hashObjectParts(parts: readonly StagedPart[]): Promise<string> {
+    const window = this.verifyWindowSize();
+    const pending: Array<Promise<Uint8Array>> = [];
+    const start = (index: number): void => {
+      const part = parts[index];
+      if (part === undefined) return;
+      const promise = this.readPartBytes(part);
+      // A later part can reject before an earlier one is awaited; keep that from surfacing as an
+      // unhandled rejection. Awaiting the promise below still observes the failure.
+      promise.catch(() => undefined);
+      pending[index] = promise;
+    };
+    for (let index = 0; index < Math.min(window, parts.length); index += 1) start(index);
+
     const hash = createHash('sha256');
-    for (const part of parts) {
-      const file = await this.readPartOrThrow(part);
-      const stream = await this.downloadPartOrThrow(part, file.filePath);
-      for await (const chunk of stream) hash.update(chunk);
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = pending[index];
+      if (part === undefined) {
+        throw new AppError('INTERNAL', { detail: `Verify window lost part ${index + 1}.` });
+      }
+      hash.update(await part);
+      start(index + window);
     }
     return hash.digest('hex');
+  }
+
+  /** Parts to read at once during verify, bounded by the concurrency cap and the byte budget. */
+  private verifyWindowSize(): number {
+    const perPart = Math.max(1, this.maxPartSizeBytes);
+    const byBudget = Math.floor(VERIFY_BUFFER_BUDGET_BYTES / perPart);
+    return Math.max(1, Math.min(this.maxVerifyConcurrency, byBudget));
+  }
+
+  /**
+   * Reads one stored part into memory, retrying transient Telegram failures. The part ceiling
+   * bounds the buffer, so verification never holds more than a window of parts at once.
+   */
+  private async readPartBytes(part: StagedPart): Promise<Uint8Array> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.readRetryAttempts; attempt += 1) {
+      try {
+        const file = await this.transport.getFile(part.fileId);
+        const stream = await this.transport.download(file.filePath);
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for await (const chunk of stream) {
+          total += chunk.byteLength;
+          if (total > this.maxPartSizeBytes) {
+            throw storageUnavailable(
+              `Telegram returned more than the ${this.maxPartSizeBytes}-byte part ceiling ` +
+                `for part ${part.partNumber}.`,
+            );
+          }
+          chunks.push(chunk);
+        }
+        const merged = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return merged;
+      } catch (error) {
+        if (!isRetryableTelegramError(error)) this.throwReadFailure(part, error);
+        lastError = error;
+        if (attempt < this.readRetryAttempts) {
+          await sleep(this.readRetryDelayMs * attempt);
+        }
+      }
+    }
+    this.throwReadFailure(part, lastError);
+  }
+
+  /** Resolves a part's download stream, mapping Telegram failures into provider errors. */
+  private async openPartStream(part: { messageId: number; fileId: string }): Promise<ByteStream> {
+    try {
+      const file = await this.transport.getFile(part.fileId);
+      return await this.transport.download(file.filePath);
+    } catch (error) {
+      this.throwReadFailure(part, error);
+    }
+  }
+
+  /** Maps a read failure onto the provider's error taxonomy. Always throws. */
+  private throwReadFailure(part: { messageId: number; fileId: string }, error: unknown): never {
+    // An already-classified provider error carries the most precise message; pass it through.
+    if (error instanceof AppError) throw error;
+    if (error instanceof TelegramNotFoundError) throw objectNotFound();
+    if (error instanceof TelegramApiError) {
+      throw storageUnavailable(
+        `Telegram could not read a stored part (message ${part.messageId}): ${error.description}`,
+        error,
+      );
+    }
+    throw storageUnavailable(
+      `Telegram could not read a stored part (message ${part.messageId}).`,
+      error,
+    );
   }
 
   private async commitUpload(
@@ -652,48 +785,15 @@ export class TelegramStorageProvider implements StorageProvider {
 
   private async *readParts(parts: readonly LocatorPart[]): ByteStream {
     for (const part of parts) {
-      const file = await this.readPartOrThrow({ fileId: part.f });
-      const stream = await this.downloadPartOrThrow(
-        { messageId: part.m, fileId: part.f },
-        file.filePath,
-      );
-      for await (const chunk of stream) yield chunk;
-    }
-  }
-
-  private async readPartOrThrow(part: { fileId: string }): Promise<{ filePath: string }> {
-    try {
-      return await this.transport.getFile(part.fileId);
-    } catch (error) {
-      if (error instanceof TelegramNotFoundError) throw objectNotFound();
-      if (error instanceof TelegramApiError) {
-        throw storageUnavailable(
-          `Telegram could not resolve a stored part: ${error.description}`,
-          error,
-        );
+      const ref = { messageId: part.m, fileId: part.f };
+      const stream = await this.openPartStream(ref);
+      try {
+        for await (const chunk of stream) yield chunk;
+      } catch (error) {
+        // Serving a client streams straight through, so a mid-body drop can only be surfaced,
+        // not retried: the consumer already holds the chunks delivered before the failure.
+        this.throwReadFailure(ref, error);
       }
-      throw storageUnavailable('Telegram could not resolve a stored part.', error);
-    }
-  }
-
-  private async downloadPartOrThrow(
-    part: { messageId: number; fileId: string },
-    filePath: string,
-  ): Promise<ByteStream> {
-    try {
-      return await this.transport.download(filePath);
-    } catch (error) {
-      if (error instanceof TelegramNotFoundError) throw objectNotFound();
-      if (error instanceof TelegramApiError) {
-        throw storageUnavailable(
-          `Telegram could not download a stored part (message ${part.messageId}): ${error.description}`,
-          error,
-        );
-      }
-      throw storageUnavailable(
-        `Telegram could not download a stored part (message ${part.messageId}).`,
-        error,
-      );
     }
   }
 
