@@ -1,6 +1,8 @@
 import type { SqlExecutor } from '../client.js';
 import type { FolderEntity } from '../entities.js';
 import { translateWriteError } from '../errors.js';
+import { toPage } from '../../pagination.js';
+import type { CursorPosition } from '../../pagination.js';
 import { parseNullableTimestamp, parseTimestamp } from '../parse.js';
 
 /**
@@ -70,12 +72,23 @@ export async function findFolderById(
   return row === undefined ? null : toFolder(row);
 }
 
+/** A row that can be paginated; see `pagination.ts` and `ListFileRow` for the rationale. */
+interface ListFolderRow extends FolderRow {
+  cursorAt: string;
+}
+
 export interface ListFoldersOptions {
   /** `any` lists the whole tree, `root` only the top level, `folder` the children of one folder. */
   readonly scope: 'any' | 'root' | 'folder';
   readonly folderId?: string;
+  /** Page size. One extra row is fetched internally to detect a following page. */
   readonly limit: number;
-  readonly before?: { readonly createdAt: Date; readonly id: string } | undefined;
+  readonly before?: CursorPosition | undefined;
+}
+
+export interface FolderPage {
+  readonly items: FolderEntity[];
+  readonly nextCursor: string | null;
 }
 
 /**
@@ -86,17 +99,18 @@ export async function listFolders(
   sql: SqlExecutor,
   ownerKey: string,
   options: ListFoldersOptions,
-): Promise<FolderEntity[]> {
+): Promise<FolderPage> {
   const folderId = options.folderId ?? null;
   const cursorCreatedAt = options.before?.createdAt ?? null;
   const cursorId = options.before?.id ?? null;
 
-  const rows = await sql<FolderRow[]>`
+  const rows = await sql<ListFolderRow[]>`
     select id,
            case when owner_user_id is null then 'anonymous' else 'user' end as "ownerKind",
            owner_key as "ownerKey", owner_user_id as "ownerUserId",
            owner_session_id as "ownerSessionId", parent_id as "parentId", name, depth,
-           created_at as "createdAt", updated_at as "updatedAt", deleted_at as "deletedAt"
+           created_at as "createdAt", updated_at as "updatedAt", deleted_at as "deletedAt",
+           to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
       from folders
      where owner_key = ${ownerKey}
        and deleted_at is null
@@ -108,9 +122,11 @@ export async function listFolders(
        and (${cursorCreatedAt}::timestamptz is null
             or (created_at, id) < (${cursorCreatedAt}, ${cursorId}::text))
      order by created_at desc, id desc
-     limit ${options.limit}
+     limit ${options.limit + 1}
   `;
-  return rows.map(toFolder);
+
+  const page = toPage(rows, options.limit);
+  return { items: page.items.map(toFolder), nextCursor: page.nextCursor };
 }
 
 export async function createFolder(

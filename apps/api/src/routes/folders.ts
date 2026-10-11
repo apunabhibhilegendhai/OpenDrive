@@ -21,7 +21,7 @@ import {
   renameFolder,
   softDeleteFolder,
 } from '../db/repositories/folders.js';
-import { decodeCursor, toPage } from '../pagination.js';
+import { decodeCursor } from '../pagination.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
 
@@ -80,14 +80,13 @@ export const folderRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       const { limit, cursor, parent } = request.query;
       const scope = parent === undefined ? 'any' : parent === 'root' ? 'root' : 'folder';
 
-      const rows = await listFolders(services.db.requireSql(), ownerKeyOf(identity), {
+      const page = await listFolders(services.db.requireSql(), ownerKeyOf(identity), {
         scope,
         ...(scope === 'folder' && typeof parent === 'string' ? { folderId: parent } : {}),
-        limit: limit + 1,
+        limit,
         before: cursor === undefined ? undefined : decodeCursor(cursor),
       });
 
-      const page = toPage(rows, limit);
       return { items: page.items.map(toFolderRecord), nextCursor: page.nextCursor };
     },
   );

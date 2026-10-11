@@ -10,7 +10,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { REQUIRED_SCOPES, assertFileOwnership, ownerKeyOf, requireScope } from '../authz.js';
 import { toFileRecord } from '../db/mappers.js';
 import { listFiles, findFileById } from '../db/repositories/files.js';
-import { decodeCursor, toPage } from '../pagination.js';
+import { decodeCursor } from '../pagination.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
 import { notImplementedHandler } from './stubs.js';
@@ -65,14 +65,13 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
       const { limit, cursor, folder } = request.query;
 
       const scope = folder === undefined ? 'any' : folder === 'root' ? 'root' : 'folder';
-      const rows = await listFiles(services.db.requireSql(), ownerKeyOf(identity), {
+      const page = await listFiles(services.db.requireSql(), ownerKeyOf(identity), {
         scope,
         ...(scope === 'folder' && typeof folder === 'string' ? { folderId: folder } : {}),
-        limit: limit + 1,
+        limit,
         before: cursor === undefined ? undefined : decodeCursor(cursor),
       });
 
-      const page = toPage(rows, limit);
       return { items: page.items.map(toFileRecord), nextCursor: page.nextCursor };
     },
   );

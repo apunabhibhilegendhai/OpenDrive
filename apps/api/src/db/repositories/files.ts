@@ -2,6 +2,8 @@ import type { FileState, FileVisibility, ScanState } from '@opendrive/shared';
 import type { SqlExecutor } from '../client.js';
 import type { FileEntity } from '../entities.js';
 import { translateWriteError } from '../errors.js';
+import { toPage } from '../../pagination.js';
+import type { CursorPosition } from '../../pagination.js';
 import { parseByteCount, parseNullableTimestamp, parseTimestamp } from '../parse.js';
 
 /**
@@ -124,23 +126,38 @@ export async function findFileByIdForAccessCheck(
   return row === undefined ? null : toFile(row);
 }
 
+/**
+ * A row that can be paginated. `cursorAt` is the exact `created_at` (microseconds preserved) used
+ * to build the next cursor; see `pagination.ts`. It is selected only by the list query and never
+ * reaches the entity.
+ */
+interface ListFileRow extends FileRow {
+  cursorAt: string;
+}
+
 export interface ListFilesOptions {
   readonly scope: 'any' | 'root' | 'folder';
   readonly folderId?: string;
+  /** Page size. One extra row is fetched internally to detect a following page. */
   readonly limit: number;
-  readonly before?: { readonly createdAt: Date; readonly id: string } | undefined;
+  readonly before?: CursorPosition | undefined;
+}
+
+export interface FilePage {
+  readonly items: FileEntity[];
+  readonly nextCursor: string | null;
 }
 
 export async function listFiles(
   sql: SqlExecutor,
   ownerKey: string,
   options: ListFilesOptions,
-): Promise<FileEntity[]> {
+): Promise<FilePage> {
   const folderId = options.folderId ?? null;
   const cursorCreatedAt = options.before?.createdAt ?? null;
   const cursorId = options.before?.id ?? null;
 
-  const rows = await sql<FileRow[]>`
+  const rows = await sql<ListFileRow[]>`
     select id,
            case when owner_user_id is null then 'anonymous' else 'user' end as "ownerKind",
            owner_key as "ownerKey", owner_user_id as "ownerUserId",
@@ -149,7 +166,8 @@ export async function listFiles(
            mime_type as "mimeType", detected_mime_type as "detectedMimeType",
            visibility, status, scan_state as "scanState", checksum_sha256 as "checksumSha256",
            created_at as "createdAt", updated_at as "updatedAt", expires_at as "expiresAt",
-           deleted_at as "deletedAt", scanned_at as "scannedAt"
+           deleted_at as "deletedAt", scanned_at as "scannedAt",
+           to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "cursorAt"
       from files
      where owner_key = ${ownerKey}
        and deleted_at is null
@@ -161,9 +179,11 @@ export async function listFiles(
        and (${cursorCreatedAt}::timestamptz is null
             or (created_at, id) < (${cursorCreatedAt}, ${cursorId}::text))
      order by created_at desc, id desc
-     limit ${options.limit}
+     limit ${options.limit + 1}
   `;
-  return rows.map(toFile);
+
+  const page = toPage(rows, options.limit);
+  return { items: page.items.map(toFile), nextCursor: page.nextCursor };
 }
 
 /**

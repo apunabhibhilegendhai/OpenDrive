@@ -23,23 +23,23 @@ cannot be trusted with. The decision and its rationale are in
 PostgreSQL (`5432`) and Redis (`6379`) are **not** published. They exist only on the runner's
 Docker network. Two HTTPS hostnames are the entire public surface:
 
-| Hostname                          | Ingress target      | What it serves                                    | Login            |
-| --------------------------------- | ------------------- | ------------------------------------------------- | ---------------- |
-| `supabase.opendrive.indevs.in`    | `localhost:8000`    | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
-| `redis.opendrive.indevs.in`       | `localhost:8081`    | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis` |
+| Hostname                       | Ingress target   | What it serves                                    | Login                                        |
+| ------------------------------ | ---------------- | ------------------------------------------------- | -------------------------------------------- |
+| `supabase.opendrive.indevs.in` | `localhost:8000` | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
+| `redis.opendrive.indevs.in`    | `localhost:8081` | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis`                            |
 
 Both hostnames are Cloudflare-proxied CNAMEs to the `database` tunnel. The tunnel ingress is
 remotely managed (Cloudflare Zero Trust), not a local `cloudflared` config file.
 
 ## Where each piece lives
 
-| Piece                              | Location                                                                                             |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                           |
-| The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                      |
+| Piece                              | Location                                                                                                                                        |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                                                                      |
+| The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                                                                 |
 | OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql`, `102-opendrive-harden-rls-and-grants.sql` |
-| Least-privilege role SQL           | `supabase/volumes/db/init/zz-opendrive-role.sql` (run every session by the workflow)                 |
-| CI (unchanged contract)            | `.github/workflows/ci.yml` in this repo — service containers only, no secrets                        |
+| Least-privilege role SQL           | `supabase/volumes/db/init/zz-opendrive-role.sql` (run every session by the workflow)                                                            |
+| CI (unchanged contract)            | `.github/workflows/ci.yml` in this repo — service containers only, no secrets                                                                   |
 
 The migration files in the infra repo are copies of `supabase/migrations/20261010000001_*.sql`,
 `20261011000001_*.sql` and `20261012000001_*.sql` here. **When a migration is added or changed in

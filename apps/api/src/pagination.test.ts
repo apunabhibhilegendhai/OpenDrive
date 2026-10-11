@@ -2,15 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { isAppError } from '@opendrive/shared';
 import { decodeCursor, encodeCursor, toPage } from './pagination.js';
 
-const createdAt = new Date('2026-10-11T12:00:00.000Z');
+/** A position with microsecond precision, as the database returns it. */
+const createdAt = '2026-10-11T12:00:00.123456Z';
 const id = 'file_0123456789012345678901234a';
 
-function row(offsetSeconds: number, rowId: string): { createdAt: Date; id: string } {
-  return { createdAt: new Date(createdAt.getTime() + offsetSeconds * 1000), id: rowId };
+function row(offsetSeconds: number, rowId: string): { cursorAt: string; id: string } {
+  return {
+    cursorAt: new Date(new Date(createdAt).getTime() + offsetSeconds * 1000).toISOString(),
+    id: rowId,
+  };
 }
 
 describe('pagination cursors', () => {
-  it('round-trips a position', () => {
+  it('round-trips a position, preserving microsecond precision', () => {
     expect(decodeCursor(encodeCursor({ createdAt, id }))).toEqual({ createdAt, id });
   });
 
@@ -47,7 +51,7 @@ describe('page assembly', () => {
   it('uses the extra row only to decide that more exist, never returning it', () => {
     const page = toPage([row(0, 'a'), row(-1, 'b'), row(-2, 'c')], 2);
     expect(page.items.map((item) => item.id)).toEqual(['a', 'b']);
-    expect(page.nextCursor).toBe(encodeCursor({ createdAt: row(-1, 'b').createdAt, id: 'b' }));
+    expect(page.nextCursor).toBe(encodeCursor({ createdAt: row(-1, 'b').cursorAt, id: 'b' }));
   });
 
   it('handles an exactly-full final page', () => {
