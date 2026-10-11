@@ -157,6 +157,12 @@ export async function listFiles(
   const cursorCreatedAt = options.before?.createdAt ?? null;
   const cursorId = options.before?.id ?? null;
 
+  // `cursorCreatedAt` is cast to `text` before `timestamptz` on purpose. PostgreSQL infers a
+  // `timestamptz` parameter from the keyset comparison below, and Postgres.js re-serialises a
+  // `timestamptz` parameter through its JS `Date` adapter on every execution after the first —
+  // truncating to milliseconds and silently skipping rows that share the caller's millisecond.
+  // The extra cast keeps Postgres.js's identity serialiser; `text::timestamptz` still parses the
+  // exact six-digit microsecond value `to_char` wrote into the cursor.
   const rows = await sql<ListFileRow[]>`
     select id,
            case when owner_user_id is null then 'anonymous' else 'user' end as "ownerKind",
@@ -176,8 +182,8 @@ export async function listFiles(
              when 'root' then folder_id is null
              else folder_id = ${folderId}
            end
-       and (${cursorCreatedAt}::timestamptz is null
-            or (created_at, id) < (${cursorCreatedAt}, ${cursorId}::text))
+       and (${cursorCreatedAt}::text::timestamptz is null
+            or (created_at, id) < (${cursorCreatedAt}::text::timestamptz, ${cursorId}::text))
      order by created_at desc, id desc
      limit ${options.limit + 1}
   `;

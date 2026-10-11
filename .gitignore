@@ -40,3 +40,7 @@ supabase/.env
 
 # Deployment tooling
 .vercel/
+
+# Local infrastructure credentials — never commit
+opendrive-infra-credentials.txt
+*-credentials.txt

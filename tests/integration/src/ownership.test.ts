@@ -387,6 +387,19 @@ describe('pagination', () => {
       );
     }
 
+    // Pin the five rows into one millisecond, a microsecond apart. A cursor that loses
+    // sub-millisecond precision (for example by round-tripping through a JS `Date`) collapses to
+    // the millisecond floor and skips every row between that floor and its real position, so this
+    // makes the exact-once guarantee deterministic instead of depending on how the inserts
+    // happened to straddle a millisecond boundary.
+    for (const [index, id] of created.entries()) {
+      await h.sql`
+        update files
+           set created_at = timestamptz '2026-01-01 00:00:00+00' + (${index} * interval '1 microsecond')
+         where id = ${id}
+      `;
+    }
+
     const seen: string[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 5; page += 1) {

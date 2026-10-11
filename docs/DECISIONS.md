@@ -432,3 +432,25 @@ not provably final (`deleteIsFinal: false`).
 **Revisit when:** an operator supplies a bot token and channel, measures the real limits
 (startup self-test + an end-to-end upload/download cycle), and records the measured maximum
 object size here so `maxFileSizeVerified` can be enabled safely.
+
+## D28. Pagination cursors are bound as `text`, then cast, so microseconds survive
+
+**Chosen:** the keyset predicate in `listFiles` / `listFolders` casts the bound cursor parameter
+to `text` before `timestamptz` (`${cursorCreatedAt}::text::timestamptz`). The cursor still carries
+`created_at` as the exact six-digit-microsecond `to_char(..., 'US')` value; the extra cast only
+pins the parameter's PostgreSQL type.
+
+**Why:** PostgreSQL infers the comparison's parameter as `timestamptz`, and Postgres.js caches the
+prepared statement after its first execution and, on every later bind, re-serialises a
+`timestamptz` parameter through its JS `Date` adapter
+(`(x instanceof Date ? x : new Date(x)).toISOString()` in `types.js`), truncating to milliseconds.
+The first page binds `null` and is unaffected, so the loss is invisible until the second page —
+and then only when a row and the cursor straddle a millisecond boundary, which is why the walk
+test failed intermittently rather than always. Forcing the parameter to `text` selects
+Postgres.js's identity serialiser, and `text::timestamptz` still parses the full-precision ISO
+string. Verified against the live database: the prepared parameter's type resolves to `{text}` and
+`2026-10-11T14:56:31.518917Z` round-trips exactly.
+
+**Guarded by:** the integration walk test now pins five rows into a single millisecond, a
+microsecond apart, so a cursor that collapses to the millisecond floor skips rows deterministically
+instead of roughly 60% of the time.
