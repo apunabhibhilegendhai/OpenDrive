@@ -26,17 +26,30 @@ describe('resolveStorageProvider', () => {
     expect(resolution.detail).toContain('refused in production');
   });
 
-  it('does not pretend the Telegram backend exists yet', () => {
+  it('attaches the experimental Telegram provider when its credentials are configured', () => {
     const resolution = resolveStorageProvider(
-      loadConfig({
-        STORAGE_PROVIDER: 'telegram-experimental',
-        TELEGRAM_BOT_TOKEN: 'placeholder',
-        TELEGRAM_STORAGE_CHAT_ID: '-1000',
-      }),
+      loadConfig({ STORAGE_PROVIDER: 'telegram-experimental' }),
+      {
+        TELEGRAM_BOT_TOKEN: '1234567:AAAA-fake-token',
+        TELEGRAM_STORAGE_CHAT_ID: '-1001234567890',
+      },
+    );
+    expect(resolution.provider).not.toBeNull();
+    expect(resolution.provider?.providerId).toBe('telegram');
+    expect(resolution.provider?.experimental).toBe(true);
+    expect(resolution.provider?.capabilities.multipartUpload).toBe(true);
+    expect(resolution.provider?.capabilities.directDownloadUrl).toBe(false);
+    expect(resolution.productionSafe).toBe(false);
+    expect(resolution.detail).toMatch(/experimental/i);
+  });
+
+  it('attaches no Telegram provider when its credentials are missing', () => {
+    const resolution = resolveStorageProvider(
+      loadConfig({ STORAGE_PROVIDER: 'telegram-experimental' }),
+      {},
     );
     expect(resolution.provider).toBeNull();
     expect(resolution.productionSafe).toBe(false);
-    expect(resolution.detail).toMatch(/experimental/i);
-    expect(resolution.detail).toMatch(/not implemented/i);
+    expect(resolution.detail).toMatch(/TELEGRAM_BOT_TOKEN/);
   });
 });

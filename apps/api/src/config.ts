@@ -123,6 +123,14 @@ export interface ApiConfig {
     readonly auth: DependencyConfiguration;
     readonly telegram: DependencyConfiguration;
   };
+  /** Telegram storage settings. The bot token itself is NOT part of this surface
+   *  (third-party secrets stay out of the resolved configuration — see config.test.ts);
+   *  the registry reads the token from the runtime environment when attaching the provider. */
+  readonly telegram: {
+    readonly configured: boolean;
+    readonly apiBaseUrl: string | null;
+    readonly maxPartSizeBytes: number | null;
+  };
   /** Metadata-database connection string, or null when the deployment is not configured. */
   readonly databaseUrl: string | null;
   /**
@@ -233,6 +241,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       redis: dependency(env, ['REDIS_URL']),
       auth: dependencyAnyOf(env, [['SUPABASE_JWKS_URL'], ['SUPABASE_JWT_SECRET']]),
       telegram: dependency(env, ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_STORAGE_CHAT_ID']),
+    },
+    telegram: {
+      configured: dependency(env, ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_STORAGE_CHAT_ID']).configured,
+      apiBaseUrl: values.TELEGRAM_API_BASE_URL ?? null,
+      maxPartSizeBytes: values.TELEGRAM_MAX_PART_SIZE_BYTES ?? null,
     },
     databaseUrl: readValue(env, 'DATABASE_URL'),
     auth: {

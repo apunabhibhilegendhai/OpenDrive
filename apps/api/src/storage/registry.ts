@@ -1,6 +1,8 @@
 import type { StorageProvider } from '@opendrive/shared';
 import { MemoryStorageProvider } from '@opendrive/shared/storage/testing';
 import type { ApiConfig } from '../config.js';
+import { TelegramHttpTransport } from './providers/telegram-transport.js';
+import { TelegramStorageProvider } from './providers/telegram.js';
 
 /**
  * Storage provider registry.
@@ -11,8 +13,9 @@ import type { ApiConfig } from '../config.js';
  *
  * Guardrails encoded here:
  * - The in-memory test double is refused in production outright.
- * - The Telegram backend is advertised as experimental and is not implemented yet, so
- *   selecting it yields no provider rather than a pretend one.
+ * - The Telegram backend is experimental: it passes the provider contract suite but is
+ *   not validated for production, so it is attached with `productionSafe: false` and an
+ *   honest durability warning rather than being advertised as durable.
  */
 
 export interface StorageResolution {
@@ -25,7 +28,20 @@ export interface StorageResolution {
   readonly productionSafe: boolean;
 }
 
-export function resolveStorageProvider(config: ApiConfig): StorageResolution {
+function readEnv(name: string, env: Record<string, string | undefined>): string | null {
+  const value = env[name];
+  return value === undefined || value.trim() === '' ? null : value.trim();
+}
+
+/**
+ * The Telegram bot token and target chat are credentials, so they are deliberately NOT part
+ * of the resolved `ApiConfig` surface (third-party secrets stay out of it). They are read
+ * here, at the moment the provider is attached, from the runtime environment.
+ */
+export function resolveStorageProvider(
+  config: ApiConfig,
+  runtimeEnv: Record<string, string | undefined> = process.env,
+): StorageResolution {
   switch (config.storageProvider) {
     case 'none':
       return {
@@ -58,15 +74,43 @@ export function resolveStorageProvider(config: ApiConfig): StorageResolution {
       };
     }
 
-    case 'telegram-experimental':
+    case 'telegram-experimental': {
+      // Credentials arrive through the runtime environment, not through the resolved
+      // configuration surface (third-party secrets stay out of it).
+      const botToken = readEnv('TELEGRAM_BOT_TOKEN', runtimeEnv);
+      const chatId = readEnv('TELEGRAM_STORAGE_CHAT_ID', runtimeEnv);
+      if (botToken === null || chatId === null) {
+        return {
+          provider: null,
+          configuredName: 'telegram-experimental',
+          detail:
+            'Telegram storage is selected but TELEGRAM_BOT_TOKEN and ' +
+            'TELEGRAM_STORAGE_CHAT_ID are not both configured, so no provider is attached. ' +
+            'Upload and download endpoints remain unavailable.',
+          productionSafe: false,
+        };
+      }
+      const transport = new TelegramHttpTransport({
+        botToken,
+        chatId,
+        ...(config.telegram.apiBaseUrl === null ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
+      });
+      const provider = new TelegramStorageProvider({
+        transport,
+        ...(config.telegram.maxPartSizeBytes === null
+          ? {}
+          : { maxPartSizeBytes: config.telegram.maxPartSizeBytes }),
+      });
       return {
-        provider: null,
+        provider,
         configuredName: 'telegram-experimental',
         detail:
-          'Telegram storage is experimental, not production-validated, and not implemented ' +
-          'yet (see docs/STORAGE-PROVIDERS.md). No provider is attached.',
+          'Telegram storage is attached but experimental: it passes the provider contract ' +
+          'suite, yet it is not validated for production and Telegram retention is not a ' +
+          'durability guarantee (see docs/STORAGE-PROVIDERS.md).',
         productionSafe: false,
       };
+    }
 
     default: {
       const exhaustive: never = config.storageProvider;

@@ -393,3 +393,42 @@ stored there.
 
 **Revisit when:** the backend must hold real user data, at which point it moves to a persistent,
 access-controlled host and this becomes a local development convenience only.
+
+## D27. Telegram Bot API is the Phase 2 storage backend, as split-part object storage
+
+**Chosen:** `TelegramStorageProvider` (`apps/api/src/storage/providers/telegram.ts`) stores each
+object as an ordered list of parts; every part is uploaded as a chat document via `sendDocument`
+and read back via `getFile` + the file endpoint. The locator persisted in `storage_objects`
+encodes exactly those Telegram message/file ids, so a restarted process can stream or delete the
+object from the locator alone. All Telegram access goes through an injectable `TelegramTransport`
+(`telegram-transport.ts`): the production path is `TelegramHttpTransport`, and the contract
+suite runs against an in-memory fake with no network. Storage is selected with
+`STORAGE_PROVIDER=telegram-experimental`; `resolveStorageProvider` attaches the provider only
+when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_STORAGE_CHAT_ID` are present in the runtime environment.
+
+**Why:** file storage must hold up to the 2 GiB product target at zero cost, and the owner
+chose Telegram as the backend (following the TGWebDrive / tg-s3 approaches). Multipart delivery
+is required because the standard Bot API cannot download a single file above 20 MiB; the provider
+keeps `maxPartSizeBytes` at 20 MiB by default so every part can always be read back, and a
+self-hosted Local Bot API server can raise it via `TELEGRAM_MAX_PART_SIZE_BYTES`. A whole object
+is verified by reading the staged parts back through Telegram and hashing them with a bounded
+string digest, so memory stays bounded to one part even for multi-gigabyte objects.
+
+**Verification record (2026-10-11):** the full provider contract suite
+(`describeStorageProviderContract`) passes against the fake transport — multipart and
+single-shot uploads, out-of-order parts, duplicate-part refusal, whole-object checksum mismatch
+refusal, abort idempotency, range-read refusal (`STORAGE_CAPABILITY_UNSUPPORTED`), idempotent
+delete, and restart-safe reads from the locator alone. The documented limits are the honest
+standard Bot API limits: 20 MiB `getFile` download ceiling per part, whole-object uploads capped
+at the part ceiling.
+
+**Not yet verified (honest):** real Telegram API limits were not measured — the development
+environment has no bot token or channel — so `maxFileSizeVerified` stays `false` and upload
+endpoints remain refused. Durability is not guaranteed (`guaranteedDurability: false`,
+`permanentRetention: false`), ranged reads and direct download URLs are not supported
+(`rangedRead: false`; a Telegram file link would embed the bot token), and deletion is treated as
+not provably final (`deleteIsFinal: false`).
+
+**Revisit when:** an operator supplies a bot token and channel, measures the real limits
+(startup self-test + an end-to-end upload/download cycle), and records the measured maximum
+object size here so `maxFileSizeVerified` can be enabled safely.

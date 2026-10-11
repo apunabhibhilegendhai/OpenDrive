@@ -20,20 +20,22 @@ contract suite in `packages/shared/src/storage/testing/storage-contract.ts` pass
 
 ## 2. Current matrix
 
-|                      | `memory-test`                         | `telegram-experimental`                                                                        | Future providers (candidates, undecided) |
-| -------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| Status               | Test double, enabled in dev/test only | Phase 2 candidate, **not implemented, not validated**                                          | Not chosen                               |
-| multipartUpload      | yes                                   | unknown until validated                                                                        | provider-dependent                       |
-| singleShotUpload     | yes                                   | Bot API accepts one document per request (subject to its own size ceiling)                     | usually yes                              |
-| resumableUpload      | **no** (process-local)                | no server-side session state to resume from                                                    | provider-dependent                       |
-| rangedRead           | yes                                   | **no**: retrieval is whole-object; there is no byte-range read of a document                   | usually yes                              |
-| directDownloadUrl    | no                                    | possible via a file link that includes the bot token — see risk 3                              | usually yes                              |
-| serverSideChecksum   | yes                                   | no independent checksum is published for a document                                            | usually yes                              |
-| permanentRetention   | **no**                                | **no**: nothing guarantees retention; the platform's own rules and the account state decide    | provider-dependent                       |
-| guaranteedDurability | **no**                                | **no**                                                                                         | provider-dependent                       |
-| deleteIsFinal        | yes                                   | no: deletion removes the stored object, and nothing proves the platform does not retain copies |
-| maxObjectSizeBytes   | 16 MiB (configurable)                 | Bot API document ceiling (currently under 2 GiB; must be re-verified before any claim)         | provider-dependent                       |
-| Cost                 | free                                  | free, within the account's own limits                                                          | provider-dependent                       |
+|                      | `memory-test`                         | `telegram-experimental`                                                                                     | Future providers (candidates, undecided) |
+| -------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Status               | Test double, enabled in dev/test only | Implemented; passes the provider contract suite. Real-API verification pending — see D27                    | Not chosen                               |
+| multipartUpload      | yes                                   | yes: objects are split into parts, each uploaded as one chat document                                       | provider-dependent                       |
+| singleShotUpload     | yes                                   | yes, capped at the part ceiling: a whole object must fit in one document                                    | usually yes                              |
+| resumableUpload      | **no** (process-local)                | **no**: staged part state is process-local; a restart loses in-progress uploads                             | provider-dependent                       |
+| rangedRead           | yes                                   | **no**: retrieval is whole-object; parts are concatenated server-side, ranged reads unsupported             | usually yes                              |
+| directDownloadUrl    | no                                    | **no**: a Telegram file link embeds the bot token, so links are never issued                                | usually yes                              |
+| serverSideChecksum   | yes                                   | no: Telegram publishes no checksum; the provider verifies the whole-object SHA-256 by read-back at finalize | usually yes                              |
+| permanentRetention   | **no**                                | **no**: nothing guarantees retention; the platform's own rules and the account state decide                 | provider-dependent                       |
+| guaranteedDurability | **no**                                | **no**                                                                                                      | provider-dependent                       |
+| deleteIsFinal        | yes                                   | no: deletion removes the messages immediately, but nothing proves the platform does not retain copies       | provider-dependent                       |
+| maxObjectSizeBytes   | 16 MiB (configurable)                 | 2 GiB configured target (no hard Telegram ceiling once objects are split into parts)                        | provider-dependent                       |
+| minPartSizeBytes     | 1 byte                                | 1 byte                                                                                                      | provider-dependent                       |
+| maxPartSizeBytes     | 1 MiB (configurable)                  | 20 MiB — the standard Bot API download ceiling; raise with a Local Bot API server                           | provider-dependent                       |
+| Cost                 | free                                  | free, within the account's own limits                                                                       | provider-dependent                       |
 
 `memory-test` is a **test double**: bytes live in the process heap, are lost on restart, are
 shared with no other process, are not durable and are not encrypted. `resolveStorageProvider`
@@ -63,14 +65,20 @@ is enabled for real files:
 5. **Not compliant object storage.** No retention policy, no legal hold, no data residency
    controls, no audit surface, no SLA. Retention or deletion claims cannot be made about
    objects stored there.
-6. **Size and streaming.** The Bot API's document ceiling is below the 2 GiB product target,
-   and retrieval is whole-object, so ranged reads and large streaming downloads are not
-   possible without spooling to local disk.
+6. **Size and streaming.** The standard Bot API can upload a document up to its own per-file
+   ceiling but can only download single files up to 20 MiB. The provider therefore splits
+   objects into parts at or below 20 MiB (default) and streams each part with bounded memory —
+   no local-disk spooling is needed even for multi-gigabyte objects. Retrieval is whole-object:
+   a read streams the concatenation of the parts, and ranged reads are not supported.
 
-Consequence for the product: until a provider passes its capability verification, the API
-reports `maxFileSizeVerified: false` (`packages/shared/src/limits.ts`) and uploads stay
-refused. The `STORAGE_PROVIDER=telegram-experimental` setting resolves to **no provider** in
-Phase 0 (`apps/api/src/storage/registry.ts`) — there is no pretend implementation.
+Consequence for the product: the `STORAGE_PROVIDER=telegram-experimental` setting now resolves
+to a **real provider** (experimental, `productionSafe: false`) when the Telegram credentials are
+present, and `health()` reports its reachability. However, real-API limits have not been
+measured (no bot token/channel in the development environment — see D27), so
+`maxFileSizeVerified` stays `false` and uploads remain refused until that verification
+happens. The in-memory provider remains a **test double**: bytes live in the process heap, are
+lost on restart, are not durable and are not encrypted, and `resolveStorageProvider` refuses it
+when `NODE_ENV=production`.
 
 ## 4. Rules for enabling a provider
 

@@ -49,7 +49,8 @@ file and only the right people can read it back.
 3. Deletion by owner and by anonymous deletion token (both routes exist and answer `501`).
 4. Redis-backed rate limiting and quota counters, so limits hold across instances.
 5. The Telegram experiment, measured against the provider contract and either enabled with its
-   measured limits or documented as rejected.
+   measured limits or documented as rejected. Implemented and contract-verified against the test
+   transport (D27); real-API limits are still unmeasured, so it is not yet enabled for bytes.
 
 Background processing follows the same phase: job queue on Redis behind the existing `JobQueue`
 interface, retention jobs implemented, orphan reconciliation.
@@ -103,7 +104,7 @@ evidence exists.
 ### Storage provider
 
 - [ ] **Capabilities measured, not assumed.** Evidence: the provider's real maximum object size measured by uploading progressively larger objects, with the date and the resulting number recorded in `docs/DECISIONS.md`.
-- [ ] **Contract suite passes against the provider.** Evidence: `describeStorageProviderContract` run against it, including capability-failure paths.
+- [~] **Contract suite passes against the provider.** `describeStorageProviderContract` passes against `TelegramStorageProvider` (2026-10-11) using the in-memory fake transport, including capability-failure paths (range read refusal, checksum mismatch, idempotent delete). Real-API verification remains pending — see `docs/DECISIONS.md` D27. Evidence: `apps/api/src/storage/providers/telegram.test.ts`.
 - [ ] **Interruption and resume demonstrated.** Evidence: a multi-part upload killed mid-way, then resumed, produces byte-identical content with a matching whole-file checksum.
 - [ ] **Orphan cleanup demonstrated.** Evidence: an aborted upload leaves no retrievable object, or the cleanup job removes it, with before/after object counts.
 
