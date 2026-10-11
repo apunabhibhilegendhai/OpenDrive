@@ -12,6 +12,7 @@
   "packageManager": "pnpm@12.11.2",
   "scripts": {
     "build": "pnpm -r build",
+    "build:libs": "pnpm --filter @opendrive/shared build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -26,7 +27,7 @@
     "dev:api": "pnpm --filter @opendrive/api dev",
     "dev:web": "pnpm --filter @opendrive/web dev",
     "clean": "pnpm -r clean",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e"
+    "verify": "pnpm build:libs && pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

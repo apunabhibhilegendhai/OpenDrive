@@ -65,6 +65,13 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
+      # `@opendrive/shared` is consumed through its built declarations — its package
+      # `exports` point `types` at `dist/index.d.ts`. Type-aware lint and `tsc` therefore
+      # cannot resolve it until it has been built, so the libraries are compiled before the
+      # checks. The later `Build` step still compiles every app on top of them.
+      - name: Build workspace libraries
+        run: pnpm build:libs
+
       - name: Lint
         run: pnpm lint
 
