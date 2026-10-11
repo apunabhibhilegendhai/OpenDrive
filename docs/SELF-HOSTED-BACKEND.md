@@ -16,7 +16,7 @@ cannot be trusted with. The decision and its rationale are in
               │  Cloudflare Tunnel "database"
               ▼
    GitHub Actions runner ── docker compose ──┬─ Kong :8000  (Studio, Auth, REST, Realtime)
-   (apunlegendhai/supabase-actions)          ├─ Postgres 17 (metadata)
+   (apunlegendtha/supabase-actions)          ├─ Postgres 17 (metadata)
                                              └─ Redis 7     (rate limits, short-lived jobs)
 ```
 
@@ -27,7 +27,7 @@ Docker network. The single public surface is the HTTPS hostname above.
 
 | Piece                              | Location                                                                                             |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| The stack + workflow               | `github.com/apunlegendhai/supabase-actions` (separate repo, branch `main`)                           |
+| The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                           |
 | The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                      |
 | OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql` |
 | Least-privilege role SQL           | `supabase/volumes/db/init/zz-opendrive-role.sql` (run every session by the workflow)                 |
@@ -49,17 +49,21 @@ of a `DO` block.
 
 ## Required Actions secrets
 
-Set on `apunlegendhai/supabase-actions` (**Settings → Secrets and variables → Actions**). Names
+Set on `apunlegendtha/supabase-actions` (**Settings → Secrets and variables → Actions**). Names
 only; values are never written to this repository:
 
 `CF_TUNNEL_TOKEN`, `CF_TUNNEL_DOMAIN`, `POSTGRES_PASSWORD`, `JWT_SECRET`, `DASHBOARD_PASSWORD`,
 `REDIS_PASSWORD`, `OPENDRIVE_APP_PASSWORD`.
 
-## Before it can run
+## Running it
 
-GitHub Actions must be enabled for the account (Settings → Actions). It is currently turned off,
-so no workflow on either repository can run. Once enabled, start a session with **Actions → Full
-Supabase Self-Hosted → Run workflow** (or wait for the 6-hourly schedule).
+Actions is enabled on `apunlegendtha`. Start a session with **Actions → Full Supabase
+Self-Hosted → Run workflow**, or wait for the 6-hourly schedule (the first session takes longer:
+it pulls images and applies migrations for the first time).
+
+> Migrated note: these repositories were moved to `apunlegendtha` after GitHub disabled Actions
+> on the previous account (`apunlegendhai`). Running a multi-hour server on Actions is what
+> GitHub's Acceptable Use Policies forbid, so the same restriction can recur on any account.
 
 ## Connecting OpenDrive to it
 

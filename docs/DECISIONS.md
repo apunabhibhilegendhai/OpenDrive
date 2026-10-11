@@ -370,7 +370,7 @@ catches, at which point the split should be by what is at risk in the change, no
 ## D26. The self-hosted Supabase stack runs on GitHub Actions as the development backend
 
 **Chosen:** OpenDrive's metadata backend and Redis are provided by a self-hosted Supabase stack
-running on GitHub Actions in a separate repository, `apunlegendhai/supabase-actions`, published
+running on GitHub Actions in a separate repository, `apunlegendtha/supabase-actions`, published
 over HTTPS only through a Cloudflare Tunnel at `supabase.opendrive.indevs.in`. That workflow
 applies OpenDrive's migrations (`supabase/migrations/100-*`, `101-*`) and creates a
 least-privilege `opendrive_app` login role on every session. No raw TCP is exposed: PostgreSQL and
