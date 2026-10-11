@@ -30,8 +30,7 @@ async function drain(stream: ByteStream): Promise<Uint8Array> {
   return merged;
 }
 
-interface FakeMessage {
-  messageId: number;
+interface FakeFile {
   fileId: string;
   fileUniqueId: string;
   bytes: Uint8Array;
@@ -39,12 +38,18 @@ interface FakeMessage {
 }
 
 /**
- * In-memory stand-in for the Telegram Bot API. Mirrors the observable behaviour the
- * provider relies on: files are retained while their message exists, getFile fails for a
- * deleted file, deleteMessage reports whether the message was present.
+ * In-memory stand-in for the Telegram Bot API, modelling what the live API was measured to
+ * do: `deleteMessage` removes the message, but the file it carried stays resolvable and
+ * downloadable afterwards. `messages` tracks live messages (so tests can assert staged
+ * messages are released); `files` tracks bytes and outlives message deletion. The provider
+ * must therefore rely on its own deletion tombstone, not a `getFile` probe, to report a
+ * deleted object as gone.
  */
 class FakeTelegramTransport implements TelegramTransport {
-  readonly messages = new Map<number, FakeMessage>();
+  /** Live messages, keyed by message id and pointing at a file id. */
+  readonly messages = new Map<number, string>();
+  /** Files, keyed by file id; retained even after their message is deleted, as Telegram does. */
+  readonly files = new Map<string, FakeFile>();
   private nextMessageId = 1000;
   private nextFileId = 0;
 
@@ -58,42 +63,41 @@ class FakeTelegramTransport implements TelegramTransport {
     this.nextMessageId += 1;
     const fileId = `fake_file_${this.nextFileId}`;
     this.nextFileId += 1;
-    this.messages.set(messageId, {
-      messageId,
+    const file: FakeFile = {
       fileId,
       fileUniqueId: `fake_unique_${fileId}`,
       bytes: input.bytes.slice(),
       filePath: `doc/fake/${fileId}.bin`,
-    });
+    };
+    this.files.set(fileId, file);
+    this.messages.set(messageId, fileId);
     return {
       messageId,
       fileId,
-      fileUniqueId: `fake_unique_${fileId}`,
+      fileUniqueId: file.fileUniqueId,
       fileSize: input.bytes.byteLength,
     };
   }
 
   async getFile(fileId: string): Promise<TelegramFileInfo> {
-    const message = [...this.messages.values()].find((candidate) => candidate.fileId === fileId);
-    if (message === undefined) {
+    const file = this.files.get(fileId);
+    if (file === undefined) {
       throw new TelegramNotFoundError(`getFile: file ${fileId} not found`, 400);
     }
     return {
       fileId,
-      fileUniqueId: message.fileUniqueId,
-      fileSize: message.bytes.byteLength,
-      filePath: message.filePath,
+      fileUniqueId: file.fileUniqueId,
+      fileSize: file.bytes.byteLength,
+      filePath: file.filePath,
     };
   }
 
   async download(filePath: string): Promise<ByteStream> {
-    const message = [...this.messages.values()].find(
-      (candidate) => candidate.filePath === filePath,
-    );
-    if (message === undefined) {
+    const file = [...this.files.values()].find((candidate) => candidate.filePath === filePath);
+    if (file === undefined) {
       throw new TelegramNotFoundError(`download: path ${filePath} not found`, 404);
     }
-    const bytes = message.bytes;
+    const bytes = file.bytes;
     return (async function* generate(): ByteStream {
       const step = 4096;
       for (let offset = 0; offset < bytes.byteLength; offset += step) {
@@ -103,6 +107,7 @@ class FakeTelegramTransport implements TelegramTransport {
   }
 
   async deleteMessage(messageId: number): Promise<boolean> {
+    // Removes the message only. The file stays resolvable, exactly as the live API behaves.
     return this.messages.delete(messageId);
   }
 
@@ -186,6 +191,32 @@ describe('Telegram storage provider', () => {
     expect(second.deleted).toBe(false);
     expect(second.alreadyAbsent).toBe(true);
     await expect(provider.getMetadata(stored.ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('reports a deleted object as gone even though Telegram keeps the file resolvable', async () => {
+    // Measured against the live Bot API: after deleteMessage the message disappears, but
+    // getFile still answers and the bytes stay downloadable. Existence must therefore come
+    // from the provider's own tombstone, not from probing Telegram.
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport });
+    const payload = new Uint8Array(512).fill(7);
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength));
+    const stored = await provider.uploadWholeObject({
+      session,
+      source: (async function* generate(): ByteStream {
+        yield payload;
+      })(),
+      sizeBytes: payload.byteLength,
+    });
+    const fileId = [...transport.files.keys()][0];
+    expect(fileId).toBeDefined();
+
+    await provider.deleteObject(stored.ref);
+
+    expect(transport.messages.size).toBe(0);
+    await expect(transport.getFile(fileId ?? '')).resolves.toBeDefined();
+    await expect(provider.getMetadata(stored.ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(provider.openReadStream(stored.ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });
 

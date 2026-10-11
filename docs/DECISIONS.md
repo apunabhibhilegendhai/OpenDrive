@@ -422,16 +422,22 @@ delete, and restart-safe reads from the locator alone. The documented limits are
 standard Bot API limits: 20 MiB `getFile` download ceiling per part, whole-object uploads capped
 at the part ceiling.
 
-**Not yet verified (honest):** real Telegram API limits were not measured — the development
-environment has no bot token or channel — so `maxFileSizeVerified` stays `false` and upload
-endpoints remain refused. Durability is not guaranteed (`guaranteedDurability: false`,
-`permanentRetention: false`), ranged reads and direct download URLs are not supported
-(`rangedRead: false`; a Telegram file link would embed the bot token), and deletion is treated as
-not provably final (`deleteIsFinal: false`).
+**Live verification (2026-10-11):** with a real bot token and a private channel the provider was
+driven against the live Bot API. `health()` reported the bot reachable; a 256 KiB single-shot upload
+and a 25 MiB four-part multipart upload each round-tripped with a matching whole-object SHA-256,
+covering `finalizeUpload`'s read-back verification and a full `openReadStream`. The multipart
+mechanism and the 20 MiB per-part read-back ceiling are therefore confirmed end-to-end at that scale.
 
-**Revisit when:** an operator supplies a bot token and channel, measures the real limits
-(startup self-test + an end-to-end upload/download cycle), and records the measured maximum
-object size here so `maxFileSizeVerified` can be enabled safely.
+**Still not verified (honest):** no object anywhere near the 2 GiB target has been stored, so
+`maxFileSizeVerified` stays `false` — the mechanism is proven, the ceiling is not. Durability is not
+guaranteed (`guaranteedDurability: false`, `permanentRetention: false`), ranged reads and direct
+download URLs are not supported (`rangedRead: false`; a Telegram file link would embed the bot
+token), and deletion is not provably final (`deleteIsFinal: false`) — see D29, which records that
+Telegram keeps serving a deleted file and how the provider compensates.
+
+**Revisit when:** an object near the 2 GiB target is stored and read back (ideally through a
+self-hosted Local Bot API server, §3.1), at which point `maxFileSizeVerified` can be enabled and the
+measured maximum recorded here.
 
 ## D28. Pagination cursors are bound as `text`, then cast, so microseconds survive
 
@@ -454,3 +460,28 @@ string. Verified against the live database: the prepared parameter's type resolv
 **Guarded by:** the integration walk test now pins five rows into a single millisecond, a
 microsecond apart, so a cursor that collapses to the millisecond floor skips rows deterministically
 instead of roughly 60% of the time.
+
+## D29. Telegram deletion is recorded locally, because the Bot API keeps serving deleted files
+
+**Chosen:** `TelegramStorageProvider` keeps an in-process tombstone (a `Set` of locators).
+`deleteObject` adds the locator; `getMetadata` and `openReadStream` consult the tombstone first and
+throw `NOT_FOUND` for a deleted object. The `getFile` probe is kept only as a best-effort existence
+check for objects this process never deleted.
+
+**Why:** the provider originally trusted a `getFile` probe to report a deleted object as gone. That
+assumption was measured against the live Bot API on 2026-10-11 and is false: after `deleteMessage`,
+`getFile` still returned a valid `file_path`, and `GET /file/bot<token>/<path>` still returned the
+original bytes with an identical SHA-256 — more than 35 seconds later, and unchanged after a further
+30 seconds. Telegram retains the file independently of the message. The in-memory fake transport had
+encoded the opposite rule ("getFile fails for a deleted file"), so the contract suite passed while
+the real backend returned metadata and bytes for objects the platform believed it had destroyed. The
+fake now models the measured behaviour (message removed, file retained), and both the contract suite
+and a dedicated regression test pin the tombstone.
+
+**Honest limits:** the tombstone is process-local. Another process, or this one after a restart,
+cannot observe it, so `deleteIsFinal` stays `false`: Telegram may still hold a copy, and only the
+platform's own metadata can state that an object is gone. This makes deletion observable to the
+process that performed it — which is what the storage contract requires — not provable in general.
+
+**Guarded by:** `apps/api/src/storage/providers/telegram.test.ts` (the realistic fake plus an
+explicit "deleted object reads as gone even though the file still resolves" case).

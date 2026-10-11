@@ -215,6 +215,16 @@ export class TelegramStorageProvider implements StorageProvider {
 
   private readonly uploads = new Map<string, TelegramUpload>();
   private readonly objects = new Map<string, TelegramObjectRecord>();
+  /**
+   * Locators this process has deleted. Telegram keeps resolving a file id — and serving the
+   * bytes — after its message is deleted (measured against the live Bot API: `getFile` still
+   * answered and the download still returned the original SHA-256 more than 35s after
+   * `deleteMessage`). An existence probe therefore cannot honour "a deleted object must read
+   * as gone", so deletion is recorded here as well. The tombstone is process-local, which is
+   * why `deleteIsFinal` stays false: another process, or this one after a restart, has no way
+   * to observe it, and Telegram may still hold a copy.
+   */
+  private readonly deleted = new Set<string>();
   private readonly transport: TelegramTransport;
   private readonly maxObjectSizeBytes: number;
   private readonly maxPartSizeBytes: number;
@@ -591,6 +601,9 @@ export class TelegramStorageProvider implements StorageProvider {
 
   async getMetadata(ref: StoreObjectRef): Promise<ObjectMetadata> {
     const locator = decodeLocator(ref.locator);
+    // Deletion wins over any probe result: Telegram would still report a deleted file as
+    // present, so the tombstone is the only reliable signal for this process.
+    if (this.deleted.has(ref.locator)) throw objectNotFound();
     const first = locator.parts[0];
     if (first === undefined) throw objectNotFound();
     // The idempotent-delete contract: a deleted object must read as gone, even for a
@@ -626,6 +639,7 @@ export class TelegramStorageProvider implements StorageProvider {
 
   async openReadStream(ref: StoreObjectRef, range?: ByteRange): Promise<ReadResult> {
     const locator = decodeLocator(ref.locator);
+    if (this.deleted.has(ref.locator)) throw objectNotFound();
     if (range !== undefined) {
       assertCapability(this, 'rangedRead', 'openReadStream with a byte range');
     }
@@ -708,6 +722,7 @@ export class TelegramStorageProvider implements StorageProvider {
       if (removed) removedAny = true;
     }
     this.objects.delete(ref.locator);
+    this.deleted.add(ref.locator);
     if (removedAny) return { deleted: true, alreadyAbsent: false };
     return { deleted: false, alreadyAbsent: true };
   }
