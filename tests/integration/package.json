@@ -1,0 +1,21 @@
+{
+  "name": "@opendrive/integration",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Integration tests that drive the application against a real PostgreSQL database.",
+  "type": "module",
+  "scripts": {
+    "test:integration": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@opendrive/api": "workspace:*",
+    "@opendrive/shared": "workspace:*",
+    "@types/node": "catalog:",
+    "fastify": "5.12.5",
+    "jose": "6.2.12",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

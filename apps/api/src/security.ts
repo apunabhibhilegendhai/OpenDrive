@@ -1,0 +1,49 @@
+import type { FastifyReply, FastifyRequest } from 'fastify';
+
+/**
+ * Baseline security headers.
+ *
+ * The API returns JSON and never serves user-supplied HTML. These headers make that
+ * guarantee explicit so a future mistake (reflecting a filename into an HTML error
+ * page, for example) cannot turn into script execution in a client's browser.
+ *
+ * HSTS is deliberately NOT set here: it belongs at the TLS terminator, and setting it
+ * on plain-HTTP local development would poison browsers for the host.
+ */
+
+const DOCS_CSP =
+  "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+  "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'";
+
+const STRICT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+
+function isDocsRoute(url: string, docsPrefix: string): boolean {
+  return url.startsWith(docsPrefix);
+}
+
+function isCacheableAsset(url: string, docsPrefix: string): boolean {
+  // Documentation assets are static and contain no user data.
+  return isDocsRoute(url, docsPrefix);
+}
+
+export function applySecurityHeaders(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  docsPrefix: string,
+): void {
+  const url = request.url;
+  const docs = isDocsRoute(url, docsPrefix);
+
+  void reply.header('x-content-type-options', 'nosniff');
+  void reply.header('referrer-policy', 'no-referrer');
+  void reply.header('cross-origin-resource-policy', 'same-origin');
+  void reply.header('x-frame-options', 'DENY');
+  // Swagger UI relies on inline script/style, so it gets a relaxed but still
+  // self-only policy. Every other response forbids all resource loading.
+  void reply.header('content-security-policy', docs ? DOCS_CSP : STRICT_CSP);
+
+  if (!isCacheableAsset(url, docsPrefix)) {
+    // API responses include private metadata; never let a cache store them.
+    void reply.header('cache-control', 'no-store');
+  }
+}

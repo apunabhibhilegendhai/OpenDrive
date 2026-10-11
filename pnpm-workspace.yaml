@@ -1,0 +1,26 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'services/*'
+  - 'tests/*'
+
+# Single source of truth for versions shared across workspace packages.
+# Packages reference these with "catalog:" instead of repeating a version.
+allowBuilds:
+  esbuild: true
+
+catalog:
+  '@types/node': 26.6.5
+  'rimraf': 6.1.3
+  'tsx': 4.23.15
+  'typescript': 6.0.3
+  'vitest': 5.0.3
+  'zod': 4.6.5
+
+minimumReleaseAgeExclude:
+  - '@types/node@26.6.5'
+  - prettier@3.9.10
+
+# pnpm 12 refuses to run dependency install scripts unless a package is listed here.
+# esbuild is required by tsx (API/worker dev runners) and needs its platform binary linked.
+# Nothing else is approved: adding an entry here is a deliberate supply-chain decision.

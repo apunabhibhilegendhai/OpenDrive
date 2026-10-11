@@ -1,0 +1,30 @@
+{
+  "name": "@opendrive/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenDrive web client. Phase 0: an honest operational status console backed by the live API.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "vite",
+    "preview": "vite preview",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@opendrive/shared": "workspace:*",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "rimraf": "catalog:",
+    "typescript": "catalog:",
+    "vite": "8.3.4",
+    "vitest": "catalog:"
+  }
+}

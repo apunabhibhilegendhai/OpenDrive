@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+.vite/
+.turbo/
+
+# Test output
+coverage/
+test-results/
+playwright-report/
+.nyc_output/
+
+# Environment and secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# Local Supabase CLI state (contains local DB data)
+supabase/.branches/
+supabase/.temp/
+supabase/.env
+
+# Deployment tooling
+.vercel/

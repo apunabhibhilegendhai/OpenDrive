@@ -1,0 +1,39 @@
+{
+  "name": "@opendrive/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared contracts: error model, identifiers, API schemas, limits and storage-provider interfaces.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./storage/testing": {
+      "types": "./dist/storage/testing/index.d.ts",
+      "import": "./dist/storage/testing/index.js",
+      "default": "./dist/storage/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "rimraf": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
