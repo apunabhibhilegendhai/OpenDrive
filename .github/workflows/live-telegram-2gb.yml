@@ -108,7 +108,12 @@ jobs:
 
       - name: Start the Local Bot API server (--local + bundled file server)
         run: |
+          # The image runs as a non-root user. A *named* volume would inherit the image's
+          # ownership, but a host bind mount keeps the runner's, so the working directory must
+          # be made writable by whatever uid the container drops to (otherwise the server exits
+          # with "Can't create files in the directory ...").
           mkdir -p "$PWD/.tg-data"
+          chmod 0777 "$PWD/.tg-data"
           docker run -d --name od-botapi \
             -e TELEGRAM_API_ID \
             -e TELEGRAM_API_HASH \
