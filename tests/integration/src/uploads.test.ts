@@ -126,7 +126,7 @@ describe('upload workflow', () => {
 
     // The locator is persisted, is active, and never appears in the metadata response.
     const objects = await h.sql<{ state: string; sizeBytes: number }[]>`
-      select state, size_bytes as "sizeBytes" from storage_objects where file_id = ${fileId}
+      select state, size_bytes::int as "sizeBytes" from storage_objects where file_id = ${fileId}
     `;
     expect(objects).toHaveLength(1);
     expect(objects[0]?.state).toBe('active');
@@ -321,12 +321,15 @@ describe('deletion', () => {
     `;
     expect(objects[0]?.state).toBe('deleted');
 
+    // Owning an id is not the same as having a readable object: a deleted file answers 409, not
+    // 404, because the row still exists and is served through the not-servable branch (see the
+    // route's own contract).
     const download = await h.server.inject({
       method: 'GET',
       url: `/api/v1/files/${fileId}/content`,
       headers: bearer(account.token),
     });
-    expect(download.statusCode).toBe(404);
+    expect(download.statusCode).toBe(409);
   });
 
   it('lets an anonymous uploader delete with the token, and nobody else', async () => {
