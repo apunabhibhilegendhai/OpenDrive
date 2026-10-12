@@ -46,6 +46,12 @@ export default tseslint.config(
     rules: { 'no-console': 'off' },
   },
   {
+    // Live harnesses (`*.live-*.test.ts`) drive a real external service and report progress
+    // to the CI log; stdout is their interface, exactly like the CLI.
+    files: ['**/*.live-*.test.ts'],
+    rules: { 'no-console': 'off' },
+  },
+  {
     files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
     extends: [js.configs.recommended],
     languageOptions: { globals: { ...globals.node } },
