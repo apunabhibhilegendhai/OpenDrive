@@ -23,7 +23,7 @@ export const registerRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
   await app.register(identityRoutes, services);
   await app.register(sessionRoutes, services);
   await app.register(apiKeyRoutes, services);
-  await app.register(uploadRoutes);
+  await app.register(uploadRoutes, services);
   await app.register(fileRoutes, services);
   await app.register(folderRoutes, services);
   await app.register(shareRoutes, services);

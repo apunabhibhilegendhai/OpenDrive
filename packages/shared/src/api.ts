@@ -27,6 +27,15 @@ import { apiKeyScopeSchema } from './domain/api-keys.js';
 export const API_VERSION = 'v1' as const;
 export const API_PREFIX = `/api/${API_VERSION}` as const;
 
+/**
+ * Header carrying a part's SHA-256 in hex, on `PUT /uploads/:id/parts/:number`.
+ *
+ * The part body is the raw bytes (`application/octet-stream`); a checksum cannot ride in the body,
+ * so the header is the only place it can go. It is optional: the provider verifies the whole
+ * object at finalize regardless, and a part checksum only fails faster.
+ */
+export const UPLOAD_PART_CHECKSUM_HEADER = 'x-part-checksum-sha256' as const;
+
 /** Id shapes, mirroring the SQL check constraints on each table. */
 const ID_PATTERN = {
   file: /^file_[0-9a-hjkmnp-tv-z]{26}$/,
@@ -294,6 +303,37 @@ export const uploadPartResponseSchema = z.object({
   checksumSha256: sha256HexSchema.optional(),
 });
 
+/**
+ * Upload session state, as reported by `GET /uploads/:id`.
+ *
+ * Mirrors the provider's `UploadSessionState`. `finalized` means the bytes are durable and the
+ * object exists; `aborted`/`failed`/`expired` mean the staged bytes were (or will be) released.
+ */
+export const uploadStateSchema = z.enum([
+  'initiated',
+  'in_progress',
+  'finalized',
+  'aborted',
+  'failed',
+  'expired',
+]);
+
+/**
+ * A resumable upload's progress, so an interrupted client can see which parts to re-send.
+ *
+ * `partsReceived` counts distinct accepted parts, not a contiguous prefix, because parts may
+ * arrive out of order.
+ */
+export const uploadStatusResponseSchema = z.object({
+  uploadId: z.string().regex(ID_PATTERN.upload),
+  fileId: z.string().regex(ID_PATTERN.file),
+  state: uploadStateSchema,
+  chunkSizeBytes: z.number().int().positive(),
+  expectedParts: z.number().int().positive().nullable(),
+  partsReceived: z.number().int().nonnegative(),
+  expiresAt: z.iso.datetime(),
+});
+
 export const completeUploadResponseSchema = z.object({
   file: fileRecordSchema,
 });
@@ -397,6 +437,7 @@ export type ReadinessResponse = z.infer<typeof readinessResponseSchema>;
 export type LimitsResponse = z.infer<typeof limitsResponseSchema>;
 export type InitiateUploadRequest = z.infer<typeof initiateUploadRequestSchema>;
 export type InitiateUploadResponse = z.infer<typeof initiateUploadResponseSchema>;
+export type UploadStatusResponse = z.infer<typeof uploadStatusResponseSchema>;
 export type CreateShareRequest = z.infer<typeof createShareRequestSchema>;
 export type ShareRecord = z.infer<typeof shareRecordSchema>;
 export type CreatedShareRecord = z.infer<typeof createdShareRecordSchema>;

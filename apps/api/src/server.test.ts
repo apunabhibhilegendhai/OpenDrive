@@ -69,17 +69,6 @@ describe('unimplemented capabilities', () => {
   const stubs: InjectOptions[] = [
     {
       method: 'POST',
-      url: '/api/v1/uploads',
-      payload: { filename: 'a.bin', sizeBytes: 10, mimeType: 'application/octet-stream' },
-    },
-    { method: 'PUT', url: '/api/v1/uploads/upl_0123456789012345678901234a/parts/1' },
-    { method: 'GET', url: '/api/v1/uploads/upl_0123456789012345678901234a' },
-    { method: 'POST', url: '/api/v1/uploads/upl_0123456789012345678901234a/complete' },
-    { method: 'DELETE', url: '/api/v1/uploads/upl_0123456789012345678901234a' },
-    { method: 'GET', url: '/api/v1/files/file_0123456789012345678901234a/content' },
-    { method: 'DELETE', url: '/api/v1/files/file_0123456789012345678901234a' },
-    {
-      method: 'POST',
       url: '/api/v1/abuse-reports',
       payload: { fileId: 'file_0123456789012345678901234a', reason: 'malware' },
     },
@@ -101,15 +90,13 @@ describe('unimplemented capabilities', () => {
     const server = await startServer();
     const response = await server.inject({
       method: 'POST',
-      url: '/api/v1/uploads',
-      payload: { filename: 'a.bin', sizeBytes: 10, mimeType: 'application/octet-stream' },
+      url: '/api/v1/abuse-reports',
+      payload: { fileId: 'file_0123456789012345678901234a', reason: 'malware' },
     });
     const raw = response.body;
-    // No upload id, file id or deletion token may appear: the endpoint created nothing.
-    expect(raw).not.toMatch(/upl_/);
-    expect(raw).not.toMatch(/file_/);
-    expect(raw).not.toContain('"deletionToken"');
-    expect(raw).not.toContain('"uploadId"');
+    // No report id or file id may appear: the endpoint created nothing.
+    expect(raw).not.toMatch(/rpt_/);
+    expect(raw).not.toContain('"reportId"');
   });
 });
 

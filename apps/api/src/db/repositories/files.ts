@@ -295,3 +295,63 @@ export async function countFilesForOwner(sql: SqlExecutor, ownerKey: string): Pr
   `;
   return rows[0]?.count ?? 0;
 }
+
+/**
+ * Counts files the owner created at or after `since`.
+ *
+ * This backs the per-principal daily upload cap. It counts every row, whatever its state, because
+ * the cap limits *how often* a caller may begin an upload — not how many bytes they end up storing.
+ * Counting only servable rows would let a caller open unlimited failed uploads.
+ */
+export async function countFilesCreatedSince(
+  sql: SqlExecutor,
+  ownerKey: string,
+  since: Date,
+): Promise<number> {
+  const rows = await sql<{ count: number }[]>`
+    select count(*)::int as "count"
+      from files
+     where owner_key = ${ownerKey} and created_at >= ${since}
+  `;
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * Stores the hash of an anonymous upload's one-time deletion token.
+ *
+ * Only the digest is persisted (shared/tokens.ts), so a database leak cannot hand an attacker a
+ * working deletion credential. There is no reader for this column in this module: it is compared in
+ * `files.ts` route handling through {@link findFileByIdForAccessCheck} plus a constant-time digest
+ * match, never selected into an entity.
+ */
+export async function setDeletionTokenHash(
+  sql: SqlExecutor,
+  fileId: string,
+  ownerKey: string,
+  tokenHash: string,
+): Promise<void> {
+  await sql`
+    update files
+       set deletion_token_hash = ${tokenHash}
+     where id = ${fileId} and owner_key = ${ownerKey}
+  `;
+}
+
+/**
+ * Reads a file's stored deletion-token digest, or null when there is none.
+ *
+ * Deliberately separate from the entity reads: the digest is a credential verifier, and folding it
+ * into `FileEntity` would risk it reaching a response through a future mapper change. The only
+ * caller is the delete route, which compares it in constant time and never returns it.
+ */
+export async function findDeletionTokenHash(
+  sql: SqlExecutor,
+  fileId: string,
+): Promise<string | null> {
+  const rows = await sql<{ tokenHash: string | null }[]>`
+    select deletion_token_hash as "tokenHash"
+      from files
+     where id = ${fileId}
+  `;
+  return rows[0]?.tokenHash ?? null;
+}

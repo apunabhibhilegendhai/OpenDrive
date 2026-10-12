@@ -7,7 +7,8 @@ describe('resolveStorageProvider', () => {
     const resolution = resolveStorageProvider(loadConfig({}));
     expect(resolution.provider).toBeNull();
     expect(resolution.productionSafe).toBe(false);
-    expect(resolution.detail).toContain('501');
+    // Uploads and downloads are implemented; without a provider they refuse rather than pretend.
+    expect(resolution.detail).toContain('503');
   });
 
   it('allows the in-memory test double outside production and labels it clearly', () => {

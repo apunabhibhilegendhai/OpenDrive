@@ -7,6 +7,7 @@ import { createIpHasher } from './auth/ip-hash.js';
 import type { IpHasher } from './auth/ip-hash.js';
 import { resolveStorageProvider } from './storage/registry.js';
 import type { StorageResolution } from './storage/registry.js';
+import { UploadSessionStore } from './storage/upload-sessions.js';
 
 /**
  * Everything the routes need, assembled once at startup.
@@ -23,6 +24,8 @@ export interface AppServices {
   readonly verifier: AccessTokenVerifier;
   readonly hashIp: IpHasher;
   readonly storage: StorageResolution;
+  /** Open upload sessions. Process-local by design; see docs/DECISIONS.md (D31, D33). */
+  readonly uploadSessions: UploadSessionStore;
 }
 
 export interface CreateServicesOptions {
@@ -33,6 +36,8 @@ export interface CreateServicesOptions {
   readonly hashIp?: IpHasher;
   /** Database connection overrides (a scratch URL in tests, notices in development). */
   readonly database?: DatabaseClientOptions;
+  /** Injected by tests that need to exercise expiry without waiting for it. */
+  readonly uploadSessions?: UploadSessionStore;
 }
 
 export function createServices(
@@ -45,5 +50,10 @@ export function createServices(
     verifier: options.verifier ?? createAccessTokenVerifier(config.auth),
     hashIp: options.hashIp ?? createIpHasher(config.ipHashSecret),
     storage: options.storage ?? resolveStorageProvider(config),
+    uploadSessions:
+      options.uploadSessions ??
+      new UploadSessionStore({
+        maxActiveSessionsPerPrincipal: config.uploads.maxActiveSessionsPerPrincipal,
+      }),
   };
 }

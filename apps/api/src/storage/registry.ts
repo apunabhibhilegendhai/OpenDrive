@@ -1,4 +1,5 @@
 import type { StorageProvider } from '@opendrive/shared';
+import { AppError } from '@opendrive/shared';
 import { MemoryStorageProvider } from '@opendrive/shared/storage/testing';
 import type { ApiConfig } from '../config.js';
 import { TelegramHttpTransport } from './providers/telegram-transport.js';
@@ -34,6 +35,21 @@ function readEnv(name: string, env: Record<string, string | undefined>): string 
 }
 
 /**
+ * The attached provider, or a 503.
+ *
+ * Uploads and downloads need bytes on disk somewhere. When no provider is attached the honest
+ * answer is "this deployment cannot store files", not a 500 and not a silent no-op — the caller can
+ * retry once an operator configures storage. The `detail` from the resolution is safe to expose: it
+ * names configuration variables, never their values.
+ */
+export function requireStorageProvider(resolution: StorageResolution): StorageProvider {
+  if (resolution.provider === null) {
+    throw new AppError('STORAGE_UNAVAILABLE', { detail: resolution.detail });
+  }
+  return resolution.provider;
+}
+
+/**
  * The Telegram bot token and target chat are credentials, so they are deliberately NOT part
  * of the resolved `ApiConfig` surface (third-party secrets stay out of it). They are read
  * here, at the moment the provider is attached, from the runtime environment.
@@ -48,8 +64,8 @@ export function resolveStorageProvider(
         provider: null,
         configuredName: 'none',
         detail:
-          'No storage provider is configured. Upload and download endpoints are declared but ' +
-          'unimplemented, and return 501 NOT_IMPLEMENTED.',
+          'No storage provider is configured. Upload and download endpoints answer 503 ' +
+          'STORAGE_UNAVAILABLE, because accepting bytes there is nowhere to keep would be a lie.',
         productionSafe: false,
       };
 

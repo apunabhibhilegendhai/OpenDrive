@@ -53,7 +53,15 @@ const environmentSchema = z.object({
   CORS_ORIGINS: optionalString,
   RATE_LIMIT_ENABLED: booleanFromEnv,
   RATE_LIMIT_REQUESTS_PER_MINUTE: z.coerce.number().int().positive().max(100_000).default(120),
+  // Part traffic is a different shape from ordinary requests: one legitimate multipart upload
+  // issues hundreds of `PUT .../parts` calls, so it gets its own, higher per-principal ceiling.
+  RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE: z.coerce.number().int().positive().max(100_000).default(600),
   TRUST_PROXY: booleanFromEnv,
+
+  // How long an incomplete upload may stay staged before it is garbage collected, and how many
+  // concurrent sessions one principal may hold. Both bound a single caller's blast radius.
+  UPLOAD_SESSION_TTL_HOURS: z.coerce.number().int().positive().max(168).default(24),
+  UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL: z.coerce.number().int().positive().max(100).default(3),
 
   STORAGE_PROVIDER: z.enum(STORAGE_PROVIDER_NAMES).default('none'),
 
@@ -117,7 +125,12 @@ export interface ApiConfig {
   readonly logLevel: 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
   readonly docsEnabled: boolean;
   readonly corsOrigins: readonly string[];
-  readonly rateLimit: { readonly enabled: boolean; readonly requestsPerMinute: number };
+  readonly rateLimit: {
+    readonly enabled: boolean;
+    readonly requestsPerMinute: number;
+    /** Per-principal ceiling for upload-part requests, which are far more numerous. */
+    readonly uploadPartsPerMinute: number;
+  };
   readonly trustProxy: boolean;
   readonly storageProvider: StorageProviderName;
   readonly limits: LimitsConfig;
@@ -153,6 +166,11 @@ export interface ApiConfig {
     readonly audience: string;
   };
   readonly anonymousSessions: { readonly ttlHours: number };
+  /** Upload-session limits. Sessions are process-local; these bound one principal's footprint. */
+  readonly uploads: {
+    readonly sessionTtlHours: number;
+    readonly maxActiveSessionsPerPrincipal: number;
+  };
   /** Secret for hashing client addresses; null means addresses are not recorded at all. */
   readonly ipHashSecret: string | null;
   /** Origin used to build share URLs. Falls back to the configured bind address in development. */
@@ -238,6 +256,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     rateLimit: {
       enabled: rateLimitEnabled,
       requestsPerMinute: values.RATE_LIMIT_REQUESTS_PER_MINUTE,
+      uploadPartsPerMinute: values.RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE,
     },
     trustProxy,
     storageProvider: values.STORAGE_PROVIDER,
@@ -267,6 +286,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       audience: values.SUPABASE_JWT_AUDIENCE ?? 'authenticated',
     },
     anonymousSessions: { ttlHours: values.ANONYMOUS_SESSION_TTL_HOURS },
+    uploads: {
+      sessionTtlHours: values.UPLOAD_SESSION_TTL_HOURS,
+      maxActiveSessionsPerPrincipal: values.UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL,
+    },
     ipHashSecret: readValue(env, 'IP_HASH_SECRET'),
     publicBaseUrl:
       values.PUBLIC_BASE_URL ??

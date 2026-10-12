@@ -8,9 +8,14 @@ describe('loadConfig', () => {
     expect(config.host).toBe('127.0.0.1');
     expect(config.port).toBe(3000);
     expect(config.storageProvider).toBe('none');
-    expect(config.rateLimit).toEqual({ enabled: true, requestsPerMinute: 120 });
+    expect(config.rateLimit).toEqual({
+      enabled: true,
+      requestsPerMinute: 120,
+      uploadPartsPerMinute: 600,
+    });
     expect(config.corsOrigins).toEqual([]);
     expect(config.trustProxy).toBe(false);
+    expect(config.uploads).toEqual({ sessionTtlHours: 24, maxActiveSessionsPerPrincipal: 3 });
     expect(config.limits.maxFileSizeVerified).toBe(false);
   });
 

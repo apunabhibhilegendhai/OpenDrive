@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { AppError, isAppError, validationFailed } from '@opendrive/shared';
+import { AppError, UPLOAD_PART_CHECKSUM_HEADER, isAppError, validationFailed } from '@opendrive/shared';
 import type { ProblemDetails } from '@opendrive/shared';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
@@ -45,13 +45,15 @@ export interface BuildServerOptions {
 const API_DESCRIPTION = [
   'OpenDrive HTTP API.',
   '',
-  'Phase 1 status: identity, authorization and metadata are live. Credentials are verified',
-  '(Supabase access token, anonymous session, API key), files and folders are listed and managed',
-  'for their owner only, share links are created, resolved and revoked, and `/api/v1/me` reports',
-  'the resulting identity and quota.',
+  'Identity, authorization and metadata are live. Credentials are verified (Supabase access token,',
+  'anonymous session, API key), files and folders are listed and managed for their owner only, share',
+  'links are created, resolved and revoked, and `/api/v1/me` reports the resulting identity and',
+  'quota.',
   '',
-  'Not implemented yet, and answering `501 NOT_IMPLEMENTED` rather than pretending: the upload',
-  'workflow and content download. Bytes never enter PostgreSQL at any point.',
+  'Storage is live for configured providers: files upload through a chunked workflow (initiate,',
+  'parts, complete/abort) and download by streaming the stored object. Bytes never enter PostgreSQL',
+  'at any point, and a deployment with no storage provider attached answers `503` rather than',
+  'accepting bytes it cannot store.',
 ].join('\n');
 
 interface ProblemContext {
@@ -163,20 +165,25 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   await app.register(cors, {
     origin: config.corsOrigins.length > 0 ? [...config.corsOrigins] : false,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'authorization', 'x-deletion-token', 'x-request-id'],
+    allowedHeaders: [
+      'content-type',
+      'authorization',
+      'x-deletion-token',
+      'x-request-id',
+      UPLOAD_PART_CHECKSUM_HEADER,
+    ],
     exposedHeaders: ['x-request-id', 'retry-after'],
     credentials: false,
     maxAge: 600,
   });
 
-  if (config.rateLimit.enabled) {
-    await app.register(rateLimit, {
-      max: config.rateLimit.requestsPerMinute,
-      timeWindow: '1 minute',
-      // Liveness must stay answerable even while an attacker floods the API.
-      allowList: (request) => request.url === '/healthz',
-    });
-  }
+  // Upload parts arrive as raw bytes, not JSON. The body is handed to the route as the live stream
+  // so a part is never buffered here; the handler bounds what it reads by the part size and passes
+  // the stream straight to the storage provider. Registering the parser is what stops Fastify from
+  // answering `415 Unsupported Media Type` to `application/octet-stream`.
+  app.addContentTypeParser('application/octet-stream', (_request, payload, done) => {
+    done(null, payload);
+  });
 
   app.setNotFoundHandler((request, reply) => {
     const problem = new AppError('NOT_FOUND', {
@@ -230,6 +237,28 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     verifier: services.verifier,
     hashIp: services.hashIp,
   });
+
+  if (config.rateLimit.enabled) {
+    // Registered *after* identity resolution so the limiter can key by principal rather than only
+    // by address: a shared NAT or proxy would otherwise make one caller's flood everyone's problem,
+    // and per-address limits alone cannot stop one authenticated account from saturating the API.
+    // Resolving identity first is what makes `request.identity` available inside `keyGenerator`.
+    await app.register(rateLimit, {
+      max: config.rateLimit.requestsPerMinute,
+      timeWindow: '1 minute',
+      keyGenerator: (request) => {
+        const identity = request.identity;
+        if (identity === null || identity === undefined || identity.kind === 'none') {
+          return request.ip;
+        }
+        return identity.kind === 'user'
+          ? `user:${identity.principal.userId}`
+          : `session:${identity.principal.sessionId}`;
+      },
+      // Liveness must stay answerable even while an attacker floods the API.
+      allowList: (request) => request.url === '/healthz',
+    });
+  }
 
   await app.register(registerRoutes, services);
 
