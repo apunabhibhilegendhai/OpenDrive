@@ -95,17 +95,24 @@ it pulls images and applies migrations for the first time).
 
 ## Connecting OpenDrive to it
 
-Because only HTTPS is exposed, the API/worker cannot open a direct `postgres://` connection from
-outside the runner. Configure OpenDrive with the Supabase HTTP surface and the Redis bridge:
+The Supabase HTTP surface verifies access tokens; the API's own `postgres://` connection is carried
+by the same `database` tunnel, through a Cloudflare **Access** TCP route:
 
 - `SUPABASE_URL=https://supabase.opendrive.indevs.in`
-- `SUPABASE_JWKS_URL=https://supabase.opendrive.indevs.in/auth/v1/.well-known/jwks.json`
+- `SUPABASE_JWKS_URL=https://supabase.opendrive.indevs.in/auth/v1/.well-known/jwks.json` — keep this
+  hostname off **Bot Fight Mode**, or the fetch is answered `403` from runner IPs and `/readyz`
+  reports `auth: unavailable`.
 - `SUPABASE_JWT_ISSUER=https://supabase.opendrive.indevs.in/auth/v1`
 - `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` — from the workflow run summary
 - `REDIS_URL` — via the instance's HTTPS bridge, not a raw `redis://` TCP endpoint
 
-`DATABASE_URL` (a direct Postgres URL) is available only for tooling that runs **inside** the
-runner, or locally through `pg-tunnel.sh`; it is not reachable from a deployed OpenDrive process.
+The API host reaches Postgres by dialling the Access-gated tunnel on loopback
+(`cloudflared access tcp --hostname db.opendrive.indevs.in --url 127.0.0.1:5432` with a service
+token) and pointing `DATABASE_URL` at that loopback URL; the same tunnel is available to local
+tooling via `pg-tunnel.sh`. Connected as `opendrive_app`, expect no rights beyond the `public` schema
+and, per D20/D36, `BYPASSRLS`. The session workflow also grants `opendrive_app` `EXECUTE` on the
+`public` functions (step “Grant OpenDrive runtime privileges”), because the `opendrive_*` helpers
+revoke `PUBLIC` and would otherwise fail every upload with `42501`.
 
 ## Limitations (read before relying on this)
 
