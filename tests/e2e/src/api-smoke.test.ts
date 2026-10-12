@@ -144,7 +144,7 @@ describe('compiled API process', () => {
     expect(body.chunkSizeBytes).toBe(8388608);
   });
 
-  it('refuses an upload with 501 and a problem document, over the wire', async () => {
+  it('refuses an unauthenticated upload with 401 and a problem document, over the wire', async () => {
     const response = await fetch(`${baseUrl}/api/v1/uploads`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -154,13 +154,12 @@ describe('compiled API process', () => {
         mimeType: 'application/pdf',
       }),
     });
-    expect(response.status).toBe(501);
+    // The upload engine is implemented (Phase 2), so the first gate an unauthenticated caller meets
+    // is identity: the route answers 401 before it ever looks at the storage provider.
+    expect(response.status).toBe(401);
     expect(response.headers.get('content-type')).toContain('application/json');
     const problem = problemDetailsSchema.parse(await response.json());
-    expect(problem.code).toBe('NOT_IMPLEMENTED');
-    // Phase 1 implemented identity and metadata; the upload engine is Phase 2. The detail has to
-    // name the phase that actually owns it, or a client cannot tell delay from breakage.
-    expect(problem.detail).toContain('Phase 2');
+    expect(problem.code).toBe('UNAUTHENTICATED');
   });
 
   it('reports validation failures for a malformed request body', async () => {

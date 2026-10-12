@@ -646,3 +646,22 @@ papered over.
 
 **Revisit when:** the service must be continuously available or hold real user data, at which point
 this becomes a development convenience and the API moves to a persistent host.
+
+## D35. A file's stored scan verdict is nullable; the wire contract normalizes it
+
+**Chosen:** `files.scan_state` stays nullable - a fresh `pending_upload`/`uploading` row has no
+verdict yet - and `FileEntity.scanState` is typed `ScanState | null` to match. `toFileRecord` maps a
+stored `NULL` to `'not_scanned'`, so the published `FileRecord.scanState` remains the non-null
+`ScanState` union every consumer already assumes.
+
+**Why:** the column and the contract disagreed about whether "no verdict yet" is representable. The
+database needs `NULL` so a row can exist before any scanner runs (the constraint suite relies on
+writing it); the contract wants one vocabulary, and `SCAN_STATES` already carries the honest word for
+this case. Normalizing at the single serialization boundary keeps both truthful and stays fail-safe:
+`isScanPass` treats `not_scanned` exactly as it treats `NULL` once scanning is enabled. Fixing this
+in the route instead would have left every other reader of a pending row - the listing and metadata
+routes - able to hit the same serialization fault.
+
+**Guarded by:** `apps/api/src/db/mappers.test.ts` (a `NULL` verdict publishes `not_scanned` and
+validates against the contract) and `tests/integration/src/uploads.test.ts` (a completed upload's
+response serializes).

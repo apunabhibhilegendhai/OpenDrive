@@ -71,7 +71,12 @@ export interface FileEntity {
   readonly detectedMimeType: string | null;
   readonly visibility: FileVisibility;
   readonly state: FileState;
-  readonly scanState: ScanState;
+  /**
+   * The stored verdict. NULL is a real value: a fresh `pending_upload`/`uploading` row has no
+   * verdict yet, and the schema's check list is deliberately nullable (see the `files.scan_state`
+   * constraint). The wire contract has no null, so `mappers.ts` normalizes it.
+   */
+  readonly scanState: ScanState | null;
   readonly checksumSha256: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;

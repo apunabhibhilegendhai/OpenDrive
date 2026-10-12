@@ -32,7 +32,7 @@ interface FileRow {
   detectedMimeType: string | null;
   visibility: FileVisibility;
   status: FileState;
-  scanState: ScanState;
+  scanState: ScanState | null;
   checksumSha256: string | null;
   createdAt: Date;
   updatedAt: Date;

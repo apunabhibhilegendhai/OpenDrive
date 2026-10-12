@@ -34,7 +34,11 @@ export function toFileRecord(entity: FileEntity): FileRecord {
     detectedMimeType: entity.detectedMimeType,
     visibility: entity.visibility,
     status: entity.state,
-    scanState: entity.scanState,
+    // The column is nullable and a file that no scanner has touched stores NULL; the published
+    // contract has a single, non-null vocabulary, and `not_scanned` is that vocabulary's own word
+    // for "no scanner has looked at this file" (see SCAN_STATES). Normalizing here keeps the wire
+    // shape total without pretending the database column is.
+    scanState: entity.scanState ?? 'not_scanned',
     checksumSha256: entity.checksumSha256,
     createdAt: entity.createdAt.toISOString(),
     updatedAt: entity.updatedAt.toISOString(),

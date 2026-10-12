@@ -65,6 +65,13 @@ describe('file records', () => {
     );
   });
 
+  it('normalizes a stored NULL scan verdict to the contract value', () => {
+    // A fresh upload row has no verdict: the column is nullable, the contract is not.
+    const record = toFileRecord({ ...file, state: 'uploading', scanState: null });
+    expect(record.scanState).toBe('not_scanned');
+    expect(() => fileRecordSchema.parse(record)).not.toThrow();
+  });
+
   it('never publishes the owner key, the provider reference or the deletion token hash', () => {
     const raw = JSON.stringify(
       toFileRecord({
