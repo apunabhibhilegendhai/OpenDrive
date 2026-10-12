@@ -577,7 +577,7 @@ abort ends a session, and `insertActiveStorageObject` is idempotent so a retried
 double-record an object.
 
 **Why:** the provider contract (D27, D30) already stages parts and is idempotent; the value the route
-adds is the *bookkeeping* around it, and two of those rules are load-bearing. First, reserving before
+adds is the _bookkeeping_ around it, and two of those rules are load-bearing. First, reserving before
 the first byte is what stops a caller from filling the disk and then discovering they are over quota
 (D23). Second, treating a premature `complete` as a permanent failure would turn a transient client
 mistake into a lost upload: the bytes are already staged and a single missing part is trivially
@@ -596,12 +596,12 @@ releasing the hold, owner and deletion-token deletion, and the size/part-size/co
 
 ## D33. Rate limiting keys on the principal, and part traffic gets its own ceiling
 
-**Chosen:** `@fastify/rate-limit` is registered *after* identity resolution, with a `keyGenerator`
+**Chosen:** `@fastify/rate-limit` is registered _after_ identity resolution, with a `keyGenerator`
 that returns the authenticated principal (`user:<id>` or `session:<id>`) and falls back to the
 request address only when no credential was proven. The part route additionally carries its own,
 higher ceiling (`RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`, default 600/min) via the route's
 `config.rateLimit`. Two further bounds live in the engine rather than the limiter: a per-principal
-daily cap on uploads *started* (`ANONYMOUS_UPLOADS_PER_DAY` / `REGISTERED_UPLOADS_PER_DAY`) and a cap
+daily cap on uploads _started_ (`ANONYMOUS_UPLOADS_PER_DAY` / `REGISTERED_UPLOADS_PER_DAY`) and a cap
 on open sessions at once (`UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL`).
 
 **Why:** an address-keyed limiter punishes everyone behind a shared NAT and cannot stop one
@@ -610,8 +610,8 @@ service. Keying on the principal fixes both. But one rule cannot fit both shapes
 single legitimate upload issues one request per part, so the ordinary 120/min ceiling would throttle
 a perfectly normal 2 GiB upload, while a per-part ceiling of 600/min would be far too loose for
 metadata routes. Splitting the ceiling by route keeps each honest. The daily-start and open-session
-caps bound *abuse* — how often work may begin and how much may be in flight — separately from the
-storage quota, which bounds *bytes*.
+caps bound _abuse_ — how often work may begin and how much may be in flight — separately from the
+storage quota, which bounds _bytes_.
 
 **Honest limits:** the limiter and the session registry are in-process, so their counters are per
 instance. A multi-instance deployment would need the shared Redis the stack already provisions; that
@@ -640,8 +640,8 @@ deliberate act, which also respects the Acceptable Use Policy constraint D26 alr
 
 **Honest limits:** the session is ephemeral (the runner is reclaimed, and the deployment inherits
 D26's data-loss caveat); the tunnel's public hostname is managed in Cloudflare Zero Trust, not in
-this repository; and because only HTTPS is exposed by the tunnel, the API needs a *separately
-reachable* PostgreSQL, not the tunnel-only Supabase hostname. All three are documented rather than
+this repository; and because only HTTPS is exposed by the tunnel, the API needs a _separately
+reachable_ PostgreSQL, not the tunnel-only Supabase hostname. All three are documented rather than
 papered over.
 
 **Revisit when:** the service must be continuously available or hold real user data, at which point

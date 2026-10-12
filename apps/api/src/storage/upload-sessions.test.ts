@@ -154,7 +154,9 @@ describe('UploadSessionStore', () => {
     });
     const ownerKey = UploadSessionStore.ownerKeyFor(USER);
     const uploadId = 'upl_0123456789012345678901234a';
-    store.create(record(uploadId, USER, { expiresAt: new Date(FIXED_NOW.getTime() + 30 * 60_000) }));
+    store.create(
+      record(uploadId, USER, { expiresAt: new Date(FIXED_NOW.getTime() + 30 * 60_000) }),
+    );
     expect(store.get(uploadId, ownerKey)).not.toBeNull();
 
     time.set(new Date(FIXED_NOW.getTime() + 2 * HOUR));

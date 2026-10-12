@@ -23,7 +23,10 @@ const storeObjectRefSchema = z.object({
   providerId: z.string().min(1).max(64),
   locator: z.string().min(1),
   sizeBytes: z.number().int().positive(),
-  checksumSha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  checksumSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
 });
 
 export interface StorageObjectRecord {

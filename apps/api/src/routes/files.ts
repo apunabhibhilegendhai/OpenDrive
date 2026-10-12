@@ -203,15 +203,13 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
       let file;
       if (identity.kind !== 'none') {
         const resolved = requireScope(identity, REQUIRED_SCOPES.filesWrite);
-        file = assertFileOwnership(
-          resolved,
-          await findFileById(sql, fileId, ownerKeyOf(resolved)),
-        );
+        file = assertFileOwnership(resolved, await findFileById(sql, fileId, ownerKeyOf(resolved)));
       } else {
         const token = request.headers['x-deletion-token'];
         if (token === undefined) {
           throw new AppError('UNAUTHENTICATED', {
-            detail: 'Deleting a file requires a credential or the deletion token it was issued with.',
+            detail:
+              'Deleting a file requires a credential or the deletion token it was issued with.',
           });
         }
         const candidate = await findFileByIdForAccessCheck(sql, fileId);
@@ -225,7 +223,8 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         file = candidate;
       }
 
-      if (file === null) throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
+      if (file === null)
+        throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
 
       const object = await findActiveStorageObjectByFileId(sql, file.id);
       if (object !== null) {

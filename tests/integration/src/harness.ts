@@ -70,6 +70,12 @@ export interface Harness {
   readonly server: FastifyInstance;
   /** Raw connection, for fixtures and for asserting what was actually stored. */
   readonly sql: Sql;
+  /**
+   * Server error lines captured in-process. A 500 hides the underlying fault from the client by
+   * design (`expose: false`), so a failing assertion can attach these to show the real cause
+   * instead of leaving the reader with "expected 200, received 500".
+   */
+  readonly logs: string[];
   close: () => Promise<void>;
 }
 
@@ -82,13 +88,28 @@ export async function createHarness(
     config,
     options.storage === undefined ? {} : { storage: options.storage },
   );
-  const server = await buildServer({ config, services, logger: false });
+  const logs: string[] = [];
+  const server = await buildServer({
+    config,
+    services,
+    // Capture server-side error output in-process instead of discarding it: a 500 deliberately
+    // hides its cause from the client, and these lines are what a failing test attaches.
+    logger: {
+      level: 'error',
+      stream: {
+        write: (line: string) => {
+          logs.push(line);
+        },
+      },
+    },
+  });
   const sql = services.db.requireSql();
   return {
     config,
     services,
     server,
     sql,
+    logs,
     close: async () => {
       await server.close();
       await services.db.close();

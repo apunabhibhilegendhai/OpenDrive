@@ -27,10 +27,7 @@ import type { Harness } from './harness.js';
 let h: Harness;
 
 beforeAll(async () => {
-  h = await createHarness(
-    { MALWARE_SCAN_ENABLED: 'false' },
-    { storage: memoryStorage() },
-  );
+  h = await createHarness({ MALWARE_SCAN_ENABLED: 'false' }, { storage: memoryStorage() });
 });
 
 afterAll(async () => {
@@ -91,13 +88,28 @@ async function complete(token: string, uploadId: string) {
   });
 }
 
+/**
+ * Completion is the step that can fail server-side for a reason the client is deliberately not told
+ * about. When it does, attach the captured server error so the failure names the real cause rather
+ * than leaving the reader with "expected 200, received 500".
+ */
+async function completeOrFail(token: string, uploadId: string) {
+  const response = await complete(token, uploadId);
+  if (response.statusCode !== 200) {
+    throw new Error(
+      `complete returned ${response.statusCode}: ${response.payload}\n` +
+        `server error log:\n${h.logs.join('')}`,
+    );
+  }
+  return response;
+}
+
 /** A registered user who can upload, plus the id of one file uploaded in a single part. */
 async function uploadOnePart(token: string, filename: string, content: Buffer) {
   const initiated = await initiate(token, { filename, sizeBytes: content.byteLength });
   const part = await putPart(token, initiated.uploadId, 1, content);
   expect(part.statusCode).toBe(200);
-  const completed = await complete(token, initiated.uploadId);
-  expect(completed.statusCode).toBe(200);
+  const completed = await completeOrFail(token, initiated.uploadId);
   return { ...initiated, file: completed.json<{ file: FileRecord }>().file };
 }
 
@@ -148,8 +160,7 @@ describe('upload workflow', () => {
     expect((await putPart(account.token, initiated.uploadId, 2, second)).statusCode).toBe(200);
     expect((await putPart(account.token, initiated.uploadId, 1, first)).statusCode).toBe(200);
 
-    const completed = await complete(account.token, initiated.uploadId);
-    expect(completed.statusCode).toBe(200);
+    const completed = await completeOrFail(account.token, initiated.uploadId);
     expect(completed.json<{ file: FileRecord }>().file.sizeBytes).toBe(content.byteLength);
 
     const download = await h.server.inject({
@@ -189,7 +200,7 @@ describe('upload workflow', () => {
     expect(progress.json<{ state: string; partsReceived: number }>().state).toBe('in_progress');
     expect(progress.json<{ partsReceived: number }>().partsReceived).toBe(1);
 
-    expect((await complete(account.token, initiated.uploadId)).statusCode).toBe(200);
+    await completeOrFail(account.token, initiated.uploadId);
   });
 
   it('refuses to serve a file that is not yet ready', async () => {
@@ -260,9 +271,9 @@ describe('abort', () => {
       filename: 'abandoned.bin',
       sizeBytes: 4096,
     });
-    expect((await putPart(account.token, initiated.uploadId, 1, Buffer.alloc(4096))).statusCode).toBe(
-      200,
-    );
+    expect(
+      (await putPart(account.token, initiated.uploadId, 1, Buffer.alloc(4096))).statusCode,
+    ).toBe(200);
 
     const aborted = await h.server.inject({
       method: 'DELETE',
@@ -328,7 +339,9 @@ describe('deletion', () => {
     expect(initiated.deletionToken).toBeDefined();
     const deletionToken = initiated.deletionToken ?? '';
 
-    expect((await putPart(session.credential, initiated.uploadId, 1, content)).statusCode).toBe(200);
+    expect((await putPart(session.credential, initiated.uploadId, 1, content)).statusCode).toBe(
+      200,
+    );
     expect((await complete(session.credential, initiated.uploadId)).statusCode).toBe(200);
 
     // A wrong token is indistinguishable from a missing file.

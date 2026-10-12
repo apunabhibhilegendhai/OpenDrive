@@ -3,7 +3,12 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { AppError, UPLOAD_PART_CHECKSUM_HEADER, isAppError, validationFailed } from '@opendrive/shared';
+import {
+  AppError,
+  UPLOAD_PART_CHECKSUM_HEADER,
+  isAppError,
+  validationFailed,
+} from '@opendrive/shared';
 import type { ProblemDetails } from '@opendrive/shared';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';

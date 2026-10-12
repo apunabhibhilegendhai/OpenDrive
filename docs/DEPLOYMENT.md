@@ -29,7 +29,7 @@ on the same runner; it is never exposed directly.
 ## The one prerequisite that trips people up
 
 The API opens a **direct `postgres://` connection**. The self-hosted Supabase stack (D26) exposes
-only HTTPS, so `supabase.opendrive.indevs.in` is *not* a usable `DATABASE_URL` from a runner.
+only HTTPS, so `supabase.opendrive.indevs.in` is _not_ a usable `DATABASE_URL` from a runner.
 `DATABASE_URL` must point at a PostgreSQL server the runner can reach:
 
 - the same PostgreSQL that a `supabase-actions` session runs, published through that project's
@@ -51,35 +51,35 @@ while refusing every request.
 
 ## Secrets (repository → Settings → Secrets and variables → Actions → Secrets)
 
-| Secret                     | What it is                                                                |
-| -------------------------- | ------------------------------------------------------------------------- |
+| Secret                     | What it is                                                                 |
+| -------------------------- | -------------------------------------------------------------------------- |
 | `DATABASE_URL`             | Direct PostgreSQL URL the runner can reach (see the prerequisite above).   |
-| `CLOUDFLARE_TUNNEL_TOKEN`  | The tunnel token from Cloudflare Zero Trust.                              |
+| `CLOUDFLARE_TUNNEL_TOKEN`  | The tunnel token from Cloudflare Zero Trust.                               |
 | `SUPABASE_JWKS_URL`        | Access-token verification (asymmetric). Prefer this over the secret below. |
-| `SUPABASE_JWT_SECRET`      | HS256 fallback when no JWKS URL is configured.                            |
-| `SUPABASE_JWT_ISSUER`      | Expected `iss` of an access token.                                        |
-| `IP_HASH_SECRET`           | HMAC key for hashed client addresses. Rotating it invalidates old hashes. |
-| `REDIS_URL`                | Optional; the in-process limiter is used until Redis is wired in.         |
-| `TELEGRAM_BOT_TOKEN`       | Telegram storage backend credential (D27).                                |
-| `TELEGRAM_STORAGE_CHAT_ID` | The channel the bot stores objects in.                                    |
+| `SUPABASE_JWT_SECRET`      | HS256 fallback when no JWKS URL is configured.                             |
+| `SUPABASE_JWT_ISSUER`      | Expected `iss` of an access token.                                         |
+| `IP_HASH_SECRET`           | HMAC key for hashed client addresses. Rotating it invalidates old hashes.  |
+| `REDIS_URL`                | Optional; the in-process limiter is used until Redis is wired in.          |
+| `TELEGRAM_BOT_TOKEN`       | Telegram storage backend credential (D27).                                 |
+| `TELEGRAM_STORAGE_CHAT_ID` | The channel the bot stores objects in.                                     |
 
 ## Variables (repository → … → Variables)
 
 Non-secret configuration. Optional ones fall back to the defaults shown by the workflow.
 
-| Variable                                   | Default                  | Notes                                                  |
-| ------------------------------------------ | ------------------------ | ------------------------------------------------------ |
-| `STORAGE_PROVIDER`                         | `telegram-experimental`  | Must not be `none`, or uploads answer 503.             |
-| `CORS_ORIGINS`                             | (empty → CORS off)       | Comma-separated browser origins.                       |
-| `PUBLIC_BASE_URL`                          | (empty)                  | Origin used to build share links.                      |
-| `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)     | Per-deployment ceiling for a declared upload.           |
-| `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)        | Client part size; the provider may clamp it.           |
-| `TELEGRAM_API_BASE_URL`                    | Telegram cloud API       | Point at a self-hosted server to lift the 20 MiB cap.  |
-| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)      | Must stay downloadable by the Bot API.                 |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                    | Per principal.                                         |
-| `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                    | Per principal, part route only.                        |
-| `UPLOAD_SESSION_TTL_HOURS`                 | `24`                     | How long an incomplete upload keeps its hold.          |
-| `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                      | Open uploads at once per principal.                    |
+| Variable                                   | Default                 | Notes                                                 |
+| ------------------------------------------ | ----------------------- | ----------------------------------------------------- |
+| `STORAGE_PROVIDER`                         | `telegram-experimental` | Must not be `none`, or uploads answer 503.            |
+| `CORS_ORIGINS`                             | (empty → CORS off)      | Comma-separated browser origins.                      |
+| `PUBLIC_BASE_URL`                          | (empty)                 | Origin used to build share links.                     |
+| `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)    | Per-deployment ceiling for a declared upload.         |
+| `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)       | Client part size; the provider may clamp it.          |
+| `TELEGRAM_API_BASE_URL`                    | Telegram cloud API      | Point at a self-hosted server to lift the 20 MiB cap. |
+| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)     | Must stay downloadable by the Bot API.                |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                   | Per principal.                                        |
+| `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                   | Per principal, part route only.                       |
+| `UPLOAD_SESSION_TTL_HOURS`                 | `24`                    | How long an incomplete upload keeps its hold.         |
+| `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                     | Open uploads at once per principal.                   |
 
 ## Running it
 
