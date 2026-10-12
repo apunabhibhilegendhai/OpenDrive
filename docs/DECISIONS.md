@@ -665,3 +665,26 @@ routes - able to hit the same serialization fault.
 **Guarded by:** `apps/api/src/db/mappers.test.ts` (a `NULL` verdict publishes `not_scanned` and
 validates against the contract) and `tests/integration/src/uploads.test.ts` (a completed upload's
 response serializes).
+
+## D36. The trusted backend role holds `BYPASSRLS`; readiness discloses it instead of failing
+
+**Chosen:** `DATABASE_URL` connects as a non-owner backend role that holds `BYPASSRLS` (self-hosted:
+`opendrive_app`; Supabase: the `service_role` shape). `inspectDatabaseRole` no longer treats
+`BYPASSRLS` as a hazard: a superuser, a table owner and any public table with RLS disabled are still
+hazards, but the bypass flag is named in the `ok` detail. `/readyz` therefore reports
+`postgres: ok` for a correctly provisioned deployment.
+
+**Why:** D20 already says this path depends on bypassing RLS — the API authorizes in code, and the
+policies exist to guard direct PostgREST access, which D13 keeps narrow, so no permissive
+`opendrive_app` policies were added to appease the probe. The probe contradicted that design, so
+every correctly provisioned self-hosted deployment answered `/readyz` with `503` forever and the
+host action's readiness gate could never pass. `supabase/tests/00_local_supabase_shim.sql` and
+`supabase/tests/10_structure.sql` record the dependency explicitly ("service_role has BYPASSRLS
+(the API path depends on it)"), which makes the probe the outlier rather than the role. Keeping the
+flag visible in the detail preserves the disclosure the probe existed to provide without turning the
+documented architecture into a permanent failure.
+
+**Guarded by:** `apps/api/src/db/role-safety.test.ts` (the bypass flag is `ok` and disclosed, while
+a superuser, an owner of `public.files` and an RLS-less table stay `degraded`) and
+`apps/api/src/dependencies.test.ts` (a required probe that is `degraded` or `unavailable` still
+makes readiness `degraded`).

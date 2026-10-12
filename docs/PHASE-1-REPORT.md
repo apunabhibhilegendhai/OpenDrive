@@ -168,9 +168,10 @@ No value is committed anywhere; `.env` is git-ignored and `.env.example` holds p
    hold across two API processes.
 5. **RLS is not the control on this path.** The API connects with a role that Supabase grants
    `BYPASSRLS`, so application scoping is what protects a request. RLS protects the direct-database
-   path. `/readyz` reports the connected role's hazards (superuser, `BYPASSRLS`, owning `files`,
-   any table without RLS) and marks readiness `degraded` when it finds one, but nothing prevents an
-   operator from deploying with the wrong role.
+   path. `/readyz` reports the connected role's hazards (superuser, owning `files`, any table
+   without RLS) and marks readiness `degraded` when it finds one, but nothing prevents an operator
+   from deploying with the wrong role. `BYPASSRLS` itself is expected for the trusted backend role
+   and is disclosed in the probe's detail rather than treated as a hazard (D36).
 6. **Identity is verified, not issued.** There is no sign-in, registration, password reset or MFA
    in this build, and no browser-facing flow. Nothing here should be read as a claim about account
    lifecycle.
@@ -192,8 +193,9 @@ the schema (asserted by `60_secrets_and_invariants.sql`).
 
 - [ ] Apply both migrations to the real Supabase project; record `supabase migration list`.
 - [ ] Re-run the cross-tenant RLS query and the whole `pnpm db:verify` suite against that instance.
-- [ ] Confirm the configured `DATABASE_URL` role is **not** a table owner and does not have
-      `BYPASSRLS`; `/readyz` must report `postgres: ok` with no hazards.
+- [ ] Confirm the configured `DATABASE_URL` role is **not** a table owner and **not** a superuser;
+      `/readyz` must report `postgres: ok` with no hazards. The trusted backend role is expected to
+      hold `BYPASSRLS` (D20, D36), and the probe names that in its detail.
 - [ ] Configure `SUPABASE_JWKS_URL` (or the HS256 secret), issuer and audience; confirm an expired,
       wrong-issuer and `service_role` token are each refused by the running deployment.
 - [ ] Verify a real Supabase-issued access token resolves to the right profile (provisioning on

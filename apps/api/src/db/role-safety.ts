@@ -4,13 +4,20 @@ import type { Sql } from './client.js';
  * Role safety.
  *
  * Row Level Security in PostgreSQL has one rule that surprises people: a **table owner bypasses its
- * own RLS policies** unless `FORCE ROW LEVEL SECURITY` is set, and a superuser or a role with
- * `rolbypassrls` bypasses every policy. That means a deployment that connects as the wrong role is
- * running with the database half of its security silently switched off — while every policy still
- * exists and every test still passes.
+ * own RLS policies** unless `FORCE ROW LEVEL SECURITY` is set, and a superuser bypasses every
+ * policy. That means a deployment that connects as the wrong role is running with the database half
+ * of its security silently switched off — while every policy still exists and every test still
+ * passes.
  *
- * This probe reports that state instead of assuming. It never changes anything, it never fails
- * readiness outright (the API still works), and it names the hazard rather than saying "degraded".
+ * `BYPASSRLS` is deliberately *not* one of those hazards. The trusted backend role is supposed to
+ * hold it (D20; `supabase/tests/00_local_supabase_shim.sql` records that the API's own queries
+ * depend on it), because the API authorizes in code and the policies exist to guard the direct
+ * PostgREST path. Treating it as a hazard would report every correctly provisioned deployment as
+ * degraded forever. The flag is still disclosed in the `ok` detail, so the state stays visible
+ * instead of hidden; a superuser, a table owner and an RLS-less table remain genuine hazards.
+ *
+ * This probe reports the state instead of assuming it. It never changes anything and it never
+ * provisions a role.
  */
 
 export interface RoleSafetyReport {
@@ -68,8 +75,6 @@ export async function inspectDatabaseRole(sql: Sql): Promise<RoleSafetyReport> {
     const hazards: string[] = [];
     if (role.isSuperuser) {
       hazards.push('connected as a superuser, which bypasses every RLS policy');
-    } else if (role.bypassesRls) {
-      hazards.push('the connected role has BYPASSRLS, so RLS is not enforced');
     }
     if (role.ownsFiles) {
       hazards.push(
@@ -83,7 +88,11 @@ export async function inspectDatabaseRole(sql: Sql): Promise<RoleSafetyReport> {
     if (hazards.length === 0) {
       return {
         status: 'ok',
-        detail: `Connected as "${role.currentUser}"; every public table has RLS enabled and the role is subject to it.`,
+        detail:
+          `Connected as "${role.currentUser}"; every public table has RLS enabled. ` +
+          (role.bypassesRls
+            ? 'The role bypasses RLS as the trusted backend role, so the policies guard the direct PostgREST path.'
+            : 'The role is subject to the policies.'),
         currentUser: role.currentUser,
         hazards,
         tablesWithoutRls,

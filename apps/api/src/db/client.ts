@@ -9,7 +9,8 @@ import type { ApiConfig } from '../config.js';
  * PostgREST. Row Level Security is still enabled on every exposed table (see
  * docs/SECURITY.md) but it is a second line of defence here, not the first: the application
  * decides authorization explicitly, and the role-safety check in `role-safety.ts` reports
- * loudly when the connected role would silently bypass RLS anyway.
+ * loudly when the connected role bypasses RLS by accident — as a superuser or as the table
+ * owner — rather than as the provisioned backend role (D20).
  *
  * Absent `DATABASE_URL` is not a startup failure — the process must still be able to start and
  * report itself unready. It is `requireSql()` that converts "not configured" into a 503 at the
