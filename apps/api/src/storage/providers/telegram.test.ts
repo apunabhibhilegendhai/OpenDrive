@@ -71,6 +71,15 @@ class FakeTelegramTransport implements TelegramTransport {
   activeDownloads = 0;
   maxConcurrentDownloads = 0;
   /**
+   * `transientGetFileFailures` makes that many getFile calls fail with a retryable error before
+   * succeeding (mirroring a Local Bot API server that is still finishing the file the client
+   * just uploaded); `alwaysFailGetFile` makes every call fail. `getFileAttempts` counts every
+   * call so a retry is observable.
+   */
+  transientGetFileFailures = 0;
+  alwaysFailGetFile = false;
+  getFileAttempts = 0;
+  /**
    * Upload-path fault injection. `transientUploadFailures` makes that many sendDocument calls
    * fail with a retryable error before succeeding; `alwaysFailUploads` makes every call fail;
    * `payloadTooLarge` makes every call fail with a size refusal (which must NOT be retried).
@@ -116,6 +125,14 @@ class FakeTelegramTransport implements TelegramTransport {
   }
 
   async getFile(fileId: string): Promise<TelegramFileInfo> {
+    this.getFileAttempts += 1;
+    if (this.alwaysFailGetFile) {
+      throw new TelegramApiError('simulated persistent getFile failure', '', null, true);
+    }
+    if (this.transientGetFileFailures > 0) {
+      this.transientGetFileFailures -= 1;
+      throw new TelegramApiError('simulated transient getFile failure', '', null, true);
+    }
     const file = this.files.get(fileId);
     if (file === undefined) {
       throw new TelegramNotFoundError(`getFile: file ${fileId} not found`, 400);
@@ -294,6 +311,64 @@ describe('Telegram storage provider', () => {
 
     const stored = await provider.finalizeUpload(session);
     expect(stored.checksumSha256).toBe(expected);
+  });
+
+  it('retries a transient getFile failure for metadata and streamed reads', async () => {
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport, readRetryDelayMs: 0 });
+    const payload = new Uint8Array(16 * 1024);
+    for (let index = 0; index < payload.byteLength; index += 1) payload[index] = index % 251;
+    const expected = await sha256HexOfBytes(payload);
+
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength));
+    const stored = await provider.uploadWholeObject({
+      session,
+      source: (async function* generate(): ByteStream {
+        yield payload;
+      })(),
+      sizeBytes: payload.byteLength,
+    });
+
+    // A freshly stored document can be locked server-side for a while; the first two getFile
+    // probes fail transiently and the provider must recover on the next attempt.
+    transport.transientGetFileFailures = 2;
+    await expect(provider.getMetadata(stored.ref)).resolves.toMatchObject({
+      sizeBytes: payload.byteLength,
+      checksumSha256: expected,
+    });
+    expect(transport.getFileAttempts).toBeGreaterThan(1);
+
+    transport.transientGetFileFailures = 2;
+    const read = await provider.openReadStream(stored.ref);
+    expect(await sha256HexOfBytes(await drain(read.stream))).toBe(expected);
+    expect(transport.getFileAttempts).toBeGreaterThan(3);
+  });
+
+  it('surfaces STORAGE_UNAVAILABLE when getFile keeps failing transiently', async () => {
+    const transport = new FakeTelegramTransport();
+    // A short budget keeps the exhaustion loop fast while proving the failure is mapped.
+    const provider = new TelegramStorageProvider({
+      transport,
+      readRetryDelayMs: 0,
+      readRetryAttempts: 2,
+    });
+    const payload = new Uint8Array(1024).fill(9);
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength));
+    const stored = await provider.uploadWholeObject({
+      session,
+      source: (async function* generate(): ByteStream {
+        yield payload;
+      })(),
+      sizeBytes: payload.byteLength,
+    });
+
+    transport.alwaysFailGetFile = true;
+    await expect(provider.getMetadata(stored.ref)).rejects.toMatchObject({
+      code: 'STORAGE_UNAVAILABLE',
+    });
+    // openReadStream is lazy: the failure surfaces while the stream is consumed.
+    const read = await provider.openReadStream(stored.ref);
+    await expect(drain(read.stream)).rejects.toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
   });
 
   it('maps a persistent download failure to STORAGE_UNAVAILABLE instead of leaking it', async () => {

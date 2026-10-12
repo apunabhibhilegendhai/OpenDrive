@@ -151,7 +151,9 @@ jobs:
         run: |
           docker logs od-botapi > botapi.log 2>&1 || true
           docker rm -f od-botapi || true
-          rm -rf "$PWD/.tg-data"
+          # The server runs as a non-root user, so files it wrote into the bind mount are owned
+          # by another uid and the regular runner user cannot delete them.
+          sudo rm -rf "$PWD/.tg-data" 2>/dev/null || rm -rf "$PWD/.tg-data"
 
       - name: Upload server logs
         if: always()

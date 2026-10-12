@@ -42,6 +42,7 @@ import {
   TelegramApiError,
   TelegramNotFoundError,
   TelegramPayloadTooLargeError,
+  type TelegramFileInfo,
   type TelegramTransport,
   type TelegramUploadReceipt,
 } from './telegram-transport.js';
@@ -799,7 +800,7 @@ export class TelegramStorageProvider implements StorageProvider {
   /** Resolves a part's download stream, mapping Telegram failures into provider errors. */
   private async openPartStream(part: { messageId: number; fileId: string }): Promise<ByteStream> {
     try {
-      const file = await this.transport.getFile(part.fileId);
+      const file = await this.getFileWithRetry(part.fileId);
       return await this.transport.download(file.filePath);
     } catch (error) {
       this.throwReadFailure(part, error);
@@ -888,6 +889,31 @@ export class TelegramStorageProvider implements StorageProvider {
     upload.session = { ...upload.session, state: 'aborted' };
   }
 
+  /**
+   * Resolves a file's download path through `transport.getFile`, retrying transient Telegram
+   * failures with the same backoff as whole-part reads.
+   *
+   * The Local Bot API server can keep a freshly-uploaded multi-GB file locked for a while
+   * (it writes/hashes the document in the background), so `getFile` may sit unanswered until
+   * that finishes. `getMetadata` and the read path must tolerate this: a transient network
+   * timeout is retryable, and a later attempt lands after the file is released.
+   */
+  private async getFileWithRetry(fileId: string): Promise<TelegramFileInfo> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.readRetryAttempts; attempt += 1) {
+      try {
+        return await this.transport.getFile(fileId);
+      } catch (error) {
+        if (!isRetryableTelegramError(error)) throw error;
+        lastError = error;
+        if (attempt < this.readRetryAttempts) {
+          await sleep(this.readRetryDelayMs * attempt);
+        }
+      }
+    }
+    throw lastError;
+  }
+
   async getMetadata(ref: StoreObjectRef): Promise<ObjectMetadata> {
     const locator = decodeLocator(ref.locator);
     // Deletion wins over any probe result: Telegram would still report a deleted file as
@@ -899,7 +925,7 @@ export class TelegramStorageProvider implements StorageProvider {
     // provider instance that never saw the delete. Probe Telegram for the first part.
     let present: boolean;
     try {
-      await this.transport.getFile(first.f);
+      await this.getFileWithRetry(first.f);
       present = true;
     } catch (error) {
       if (error instanceof TelegramNotFoundError) present = false;
