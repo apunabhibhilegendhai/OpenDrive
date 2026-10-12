@@ -149,6 +149,29 @@ jobs:
             done
           fi
 
+          # Prove the tunnel carries a real Postgres session before the API starts, so a broken
+          # tunnel is reported as such instead of surfacing as an unexplained /readyz 503.
+          if [ -n "$db_tunnel_pid" ]; then
+            node -e '
+              const postgres = require("./apps/api/node_modules/postgres");
+              const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 15, idle_timeout: 1 });
+              sql`select 1 as ok`
+                .then(async ([row]) => {
+                  console.log("Database tunnel pre-flight: select 1 -> " + row.ok);
+                  await sql.end();
+                  process.exit(0);
+                })
+                .catch((error) => {
+                  console.error("Database tunnel pre-flight failed: " + error.message);
+                  process.exit(1);
+                });
+            ' || {
+              echo "The database tunnel did not carry a Postgres connection:"
+              cat db-tunnel.log
+              exit 1
+            }
+          fi
+
           node apps/api/dist/index.js > api.log 2>&1 &
           api_pid=$!
 
@@ -168,6 +191,12 @@ jobs:
               ready=true
               break
             fi
+            if [ "$attempt" = 1 ]; then
+              # The body names the dependency that is not ok, which is the whole diagnosis.
+              echo "First /readyz attempt (${attempt}) body:"
+              curl -sS http://127.0.0.1:3000/readyz || true
+              echo
+            fi
             if ! kill -0 "$api_pid" 2>/dev/null; then
               echo "The API exited during startup:"
               cat api.log
@@ -177,7 +206,11 @@ jobs:
           done
 
           if [ "$ready" != true ]; then
-            echo "The API did not become ready within 30s:"
+            echo "The API did not become ready within 30s. Last /readyz body:"
+            curl -sS http://127.0.0.1:3000/readyz || true
+            echo
+            echo "===== db-tunnel.log (tail) ====="
+            tail -n 50 db-tunnel.log 2>/dev/null || echo "(no db-tunnel.log)"
             cat api.log
             exit 1
           fi
