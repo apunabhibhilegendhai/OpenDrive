@@ -104,6 +104,10 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_STORAGE_CHAT_ID: ${{ secrets.TELEGRAM_STORAGE_CHAT_ID }}
           CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          # Zero Trust service token + hostname for the Access-gated Postgres TCP tunnel.
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          DATABASE_TUNNEL_HOSTNAME: ${{ vars.DATABASE_TUNNEL_HOSTNAME || 'db.opendrive.indevs.in' }}
 
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
         run: |
@@ -115,6 +119,36 @@ jobs:
           : "${DATABASE_URL:?set the DATABASE_URL secret (must be reachable from the runner)}"
           : "${CLOUDFLARE_TUNNEL_TOKEN:?set the CLOUDFLARE_TUNNEL_TOKEN secret}"
 
+          # The metadata database is never exposed publicly. When a Zero Trust service
+          # token is configured, open a loopback port through the Access-gated
+          # `db.<domain>` tunnel and let DATABASE_URL point at 127.0.0.1:5432. Without a
+          # token the tunnel stays closed and DATABASE_URL must already resolve (e.g. a
+          # directly reachable Postgres on the runner's own network).
+          db_tunnel_pid=""
+          if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            echo "Opening the Access-gated database tunnel (${DATABASE_TUNNEL_HOSTNAME}) on 127.0.0.1:5432 ..."
+            cloudflared access tcp \
+              --hostname "$DATABASE_TUNNEL_HOSTNAME" \
+              --url 127.0.0.1:5432 \
+              --service-token-id "$CF_ACCESS_CLIENT_ID" \
+              --service-token-secret "$CF_ACCESS_CLIENT_SECRET" \
+              > db-tunnel.log 2>&1 &
+            db_tunnel_pid=$!
+            for attempt in $(seq 1 20); do
+              if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+                exec 3>&- 3<&-
+                echo "Database tunnel is listening after ${attempt}s."
+                break
+              fi
+              if ! kill -0 "$db_tunnel_pid" 2>/dev/null; then
+                echo "The database tunnel exited during startup:"
+                cat db-tunnel.log
+                exit 1
+              fi
+              sleep 1
+            done
+          fi
+
           node apps/api/dist/index.js > api.log 2>&1 &
           api_pid=$!
 
@@ -122,7 +156,7 @@ jobs:
           tunnel_pid=$!
 
           cleanup() {
-            kill "$api_pid" "$tunnel_pid" 2>/dev/null || true
+            kill "$api_pid" "$tunnel_pid" ${db_tunnel_pid:+"$db_tunnel_pid"} 2>/dev/null || true
           }
           trap cleanup EXIT
 
@@ -162,3 +196,5 @@ jobs:
           tail -n 200 api.log 2>/dev/null || echo "(no api.log)"
           echo "===== tunnel.log (tail) ====="
           tail -n 100 tunnel.log 2>/dev/null || echo "(no tunnel.log)"
+          echo "===== db-tunnel.log (tail) ====="
+          tail -n 50 db-tunnel.log 2>/dev/null || echo "(no db-tunnel.log)"
