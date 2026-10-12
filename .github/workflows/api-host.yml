@@ -1,14 +1,21 @@
 # Host the OpenDrive API on a GitHub Actions runner, published over HTTPS by a Cloudflare Tunnel.
 #
-# This is a deliberate, operator-triggered action — never something a push starts, and never part
-# of CI. CI (`ci.yml`) stays secret-free and bounded; this workflow is the opposite: it needs
-# credentials and it holds a runner for hours. Keeping the two separate is the whole point.
+# This is a deliberate, operator-triggered or scheduled action — never something a push starts, and
+# never part of CI. CI (`ci.yml`) stays secret-free and bounded; this workflow is the opposite: it
+# needs credentials and it holds a runner for hours. Keeping the two separate is the whole point.
 #
-# Read docs/DEPLOYMENT.md before using it. Two things must be true first:
+# It also runs on a schedule so the public API stays up between manual dispatches. `concurrency`
+# (below) serialises runs: each scheduled run is queued and starts as the previous one ends rather
+# than alongside it. Overlap is not benign — upload sessions live in the process, so two instances
+# behind one tunnel would strand a multi-part upload on whichever instance did not see its start.
+#
+# Read docs/DEPLOYMENT.md before using it. Three things must be true first:
 #   1. A reachable metadata database. The API opens a direct `postgres://` connection, so
 #      `DATABASE_URL` must point at a server this runner can actually reach — not the
 #      tunnel-only Supabase hostname, which exposes HTTPS but not PostgreSQL.
 #   2. A Cloudflare Tunnel whose public hostname ingress maps to `http://localhost:3000`.
+#   3. (Optional) Redis, for cluster-wide rate-limit counters. When `REDIS_URL` is set the runner
+#      opens an Access-gated TCP tunnel to `redis-tcp.<domain>` on 127.0.0.1:6379.
 #
 # Hosting a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict;
 # treat a run here as a development deployment, not a home for real user data.
@@ -21,6 +28,10 @@ on:
         description: 'How long to keep the API and tunnel up (5–330).'
         required: false
         default: '300'
+  schedule:
+    # Every four hours. A run lasts five and `concurrency` queues the next one behind it, so the
+    # API stays up without a manual dispatch; the spare hour absorbs scheduler delay.
+    - cron: '0 */4 * * *'
 
 permissions:
   contents: read
@@ -108,6 +119,8 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           DATABASE_TUNNEL_HOSTNAME: ${{ vars.DATABASE_TUNNEL_HOSTNAME || 'db.opendrive.indevs.in' }}
+          # Access-gated raw-Redis TCP tunnel hostname (same service token as the database).
+          REDIS_TUNNEL_HOSTNAME: ${{ vars.REDIS_TUNNEL_HOSTNAME || 'redis-tcp.opendrive.indevs.in' }}
 
           DURATION_MINUTES: ${{ inputs.duration_minutes }}
         run: |
@@ -149,27 +162,68 @@ jobs:
             done
           fi
 
+          # Redis is optional and shares the database tunnel's shape: an Access-gated TCP port
+          # opened on loopback. With `REDIS_URL` pointing at 127.0.0.1:6379 the API's rate-limit
+          # counters are shared instead of per-process. A failure here is *not* fatal: the API
+          # starts anyway, falls back to in-process limits, and reports Redis in /readyz.
+          redis_tunnel_pid=""
+          if [ -n "${REDIS_URL:-}" ] && [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            echo "Opening the Access-gated Redis tunnel (${REDIS_TUNNEL_HOSTNAME}) on 127.0.0.1:6379 ..."
+            cloudflared access tcp \
+              --hostname "$REDIS_TUNNEL_HOSTNAME" \
+              --url 127.0.0.1:6379 \
+              --service-token-id "$CF_ACCESS_CLIENT_ID" \
+              --service-token-secret "$CF_ACCESS_CLIENT_SECRET" \
+              > redis-tunnel.log 2>&1 &
+            redis_tunnel_pid=$!
+            for attempt in $(seq 1 20); do
+              if (exec 3<>/dev/tcp/127.0.0.1/6379) 2>/dev/null; then
+                exec 3>&- 3<&-
+                echo "Redis tunnel is listening after ${attempt}s."
+                break
+              fi
+              if ! kill -0 "$redis_tunnel_pid" 2>/dev/null; then
+                echo "The Redis tunnel exited during startup; continuing with in-process limits:"
+                cat redis-tunnel.log
+                redis_tunnel_pid=""
+                break
+              fi
+              sleep 1
+            done
+          fi
+
           # Prove the tunnel carries a real Postgres session before the API starts, so a broken
-          # tunnel is reported as such instead of surfacing as an unexplained /readyz 503.
+          # tunnel is reported as such instead of surfacing as an unexplained /readyz 503. The
+          # backend Supabase session is itself restarted on a schedule, so a scheduled run can
+          # begin during a brief outage: retry for a few minutes before giving up.
           if [ -n "$db_tunnel_pid" ]; then
-            node -e '
-              const postgres = require("./apps/api/node_modules/postgres");
-              const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 15, idle_timeout: 1 });
-              sql`select 1 as ok`
-                .then(async ([row]) => {
-                  console.log("Database tunnel pre-flight: select 1 -> " + row.ok);
-                  await sql.end();
-                  process.exit(0);
-                })
-                .catch((error) => {
-                  console.error("Database tunnel pre-flight failed: " + error.message);
-                  process.exit(1);
-                });
-            ' || {
+            db_ok=false
+            for attempt in $(seq 1 60); do
+              if node -e '
+                  const postgres = require("./apps/api/node_modules/postgres");
+                  const sql = postgres(process.env.DATABASE_URL, { max: 1, connect_timeout: 15, idle_timeout: 1 });
+                  sql`select 1 as ok`
+                    .then(async ([row]) => {
+                      console.log("Database tunnel pre-flight: select 1 -> " + row.ok);
+                      await sql.end();
+                      process.exit(0);
+                    })
+                    .catch((error) => {
+                      console.error("Database tunnel pre-flight failed: " + error.message);
+                      process.exit(1);
+                    });
+                '; then
+                db_ok=true
+                break
+              fi
+              echo "Database tunnel pre-flight attempt ${attempt} failed; retrying in 3s ..."
+              sleep 3
+            done
+            if [ "$db_ok" != true ]; then
               echo "The database tunnel did not carry a Postgres connection:"
               cat db-tunnel.log
               exit 1
-            }
+            fi
           fi
 
           node apps/api/dist/index.js > api.log 2>&1 &
@@ -179,13 +233,14 @@ jobs:
           tunnel_pid=$!
 
           cleanup() {
-            kill "$api_pid" "$tunnel_pid" ${db_tunnel_pid:+"$db_tunnel_pid"} 2>/dev/null || true
+            kill "$api_pid" "$tunnel_pid" \
+              ${db_tunnel_pid:+"$db_tunnel_pid"} ${redis_tunnel_pid:+"$redis_tunnel_pid"} 2>/dev/null || true
           }
           trap cleanup EXIT
 
           echo "Waiting for the API to report ready on 127.0.0.1:3000 ..."
           ready=false
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 120); do
             if curl -fsS http://127.0.0.1:3000/readyz >/dev/null 2>&1; then
               echo "API ready after ${attempt}s."
               ready=true
@@ -206,11 +261,13 @@ jobs:
           done
 
           if [ "$ready" != true ]; then
-            echo "The API did not become ready within 30s. Last /readyz body:"
+            echo "The API did not become ready within 120s. Last /readyz body:"
             curl -sS http://127.0.0.1:3000/readyz || true
             echo
             echo "===== db-tunnel.log (tail) ====="
             tail -n 50 db-tunnel.log 2>/dev/null || echo "(no db-tunnel.log)"
+            echo "===== redis-tunnel.log (tail) ====="
+            tail -n 50 redis-tunnel.log 2>/dev/null || echo "(no redis-tunnel.log)"
             cat api.log
             exit 1
           fi
@@ -231,3 +288,5 @@ jobs:
           tail -n 100 tunnel.log 2>/dev/null || echo "(no tunnel.log)"
           echo "===== db-tunnel.log (tail) ====="
           tail -n 50 db-tunnel.log 2>/dev/null || echo "(no db-tunnel.log)"
+          echo "===== redis-tunnel.log (tail) ====="
+          tail -n 50 redis-tunnel.log 2>/dev/null || echo "(no redis-tunnel.log)"

@@ -154,6 +154,8 @@ export interface ApiConfig {
   };
   /** Metadata-database connection string, or null when the deployment is not configured. */
   readonly databaseUrl: string | null;
+  /** Redis connection string, or null when rate-limit counters stay in-process. */
+  readonly redisUrl: string | null;
   /**
    * How the API verifies Supabase access tokens. `configured` is false when neither key source
    * is present; protected routes then fail closed with 503 rather than trusting anything.
@@ -277,6 +279,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       filesBaseUrl: values.TELEGRAM_FILES_BASE_URL ?? null,
     },
     databaseUrl: readValue(env, 'DATABASE_URL'),
+    redisUrl: readValue(env, 'REDIS_URL'),
     auth: {
       configured:
         values.SUPABASE_JWKS_URL !== undefined || values.SUPABASE_JWT_SECRET !== undefined,

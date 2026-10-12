@@ -98,9 +98,10 @@ would let a weak credential be used as a fallback when a strong one is invalid i
 ## 5. Abuse resistance
 
 - **Rate limiting** is applied globally except to `/healthz`, which must stay answerable during
-  a flood (`apps/api/src/server.ts`). The current limiter is in-process, so it is per-instance;
-  a later phase replaces the store with Redis so limits hold across instances. This limitation is
-  deliberate and documented rather than hidden.
+  a flood (`apps/api/src/server.ts`). The limiter keys on the authenticated principal (D33) and,
+  when `REDIS_URL` is set, counts in Redis so the limits hold across instances (D37); without it the
+  store is in-process and therefore per-instance. Either way the choice is visible in `/readyz`, and
+  the limitation is deliberate and documented rather than hidden.
 - **Quotas** are enforced per principal in the database, not only configured: per-file size,
   storage and per-day upload allowances for anonymous and registered principals, plus a file-count
   ceiling. Usage is _reserved_ before bytes move (`quota_reservations`, with a row lock on the
@@ -189,10 +190,11 @@ otherwise.** What is actually true:
 
 ## 11. Explicit gaps in this build
 
-Not implemented, and not to be described as working: any byte transfer (upload, download, and the
-deletion of a stored object); Redis-backed rate limiting shared across instances; malware scanning;
-administrative takedowns and abuse triage; and any storage provider. Every one of those appears as
-a `501` naming its phase, a `not_configured` dependency, or a `declared` job.
+Not implemented, and not to be described as working: malware scanning; administrative takedowns and
+abuse triage; and any storage provider beyond the experimental Telegram one. Every one of those
+appears as a `501` naming its phase, a `not_configured` dependency, or a `declared` job. Shared
+rate-limit counters are implemented through Redis when configured (D37); out of the box the store
+remains in-process.
 
 Two limitations are worth stating plainly rather than leaving to inference:
 

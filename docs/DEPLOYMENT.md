@@ -20,7 +20,8 @@ metadata/Redis backend this connects to is described in
              ▼
    GitHub Actions runner
      ├─ cloudflared  ──►  http://localhost:3000
-     └─ node apps/api/dist/index.js  ──►  DATABASE_URL (direct Postgres)
+     ├─ node apps/api/dist/index.js  ──►  DATABASE_URL (direct Postgres)
+     └─ cloudflared access tcp  ──►  127.0.0.1:5432 / :6379  (Access-gated, see below)
 ```
 
 Only the tunnel hostname is public. The API binds `127.0.0.1:3000` and is reached by `cloudflared`
@@ -44,6 +45,12 @@ broken tunnel is reported as such instead of surfacing later as an unexplained `
 `DATABASE_URL` may instead point at any PostgreSQL reachable from GitHub-hosted runners (a managed
 instance, a separately tunnelled host); the Access-gated tunnel above is simply the intended
 self-hosted path.
+
+Redis, when configured, uses the same shape and the same service token: the workflow runs
+`cloudflared access tcp --hostname redis-tcp.opendrive.indevs.in --url 127.0.0.1:6379` and points
+`REDIS_URL` at `redis://default:<password>@127.0.0.1:6379/0`. It is optional — a failed Redis tunnel
+is not fatal, the API starts anyway, and `/readyz` reports `redis`. The `redis-tcp` hostname must be
+in the same Access application as `db` (one service token covers both).
 
 ## Two things that silently break readiness
 
@@ -74,48 +81,51 @@ opendrive_reserve_storage`. The `supabase-actions` session grants this on every 
 
 ## Secrets (repository → Settings → Secrets and variables → Actions → Secrets)
 
-| Secret                     | What it is                                                                                                                                         |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`             | Direct PostgreSQL URL the runner can reach (see the prerequisite above).                                                                           |
-| `CLOUDFLARE_TUNNEL_TOKEN`  | The tunnel token from Cloudflare Zero Trust.                                                                                                       |
-| `CF_ACCESS_CLIENT_ID`      | Access service-token id for the Access-gated Postgres tunnel.                                                                                      |
-| `CF_ACCESS_CLIENT_SECRET`  | Access service-token secret for the same tunnel.                                                                                                   |
-| `SUPABASE_JWKS_URL`        | Access-token verification (asymmetric). Prefer this over the secret below. JWKS verification fails if the path is behind Bot Fight Mode or Access. |
-| `SUPABASE_JWT_SECRET`      | HS256 fallback when no JWKS URL is configured.                                                                                                     |
-| `SUPABASE_JWT_ISSUER`      | Expected `iss` of an access token.                                                                                                                 |
-| `IP_HASH_SECRET`           | HMAC key for hashed client addresses. Rotating it invalidates old hashes.                                                                          |
-| `REDIS_URL`                | Optional; the in-process limiter is used until Redis is wired in.                                                                                  |
-| `TELEGRAM_BOT_TOKEN`       | Telegram storage backend credential (D27).                                                                                                         |
-| `TELEGRAM_STORAGE_CHAT_ID` | The channel the bot stores objects in.                                                                                                             |
+| Secret                     | What it is                                                                                                                                                  |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`             | Direct PostgreSQL URL the runner can reach (see the prerequisite above).                                                                                    |
+| `CLOUDFLARE_TUNNEL_TOKEN`  | The tunnel token from Cloudflare Zero Trust.                                                                                                                |
+| `CF_ACCESS_CLIENT_ID`      | Access service-token id for the Access-gated Postgres tunnel.                                                                                               |
+| `CF_ACCESS_CLIENT_SECRET`  | Access service-token secret for the same tunnel.                                                                                                            |
+| `SUPABASE_JWKS_URL`        | Access-token verification (asymmetric). Prefer this over the secret below. JWKS verification fails if the path is behind Bot Fight Mode or Access.          |
+| `SUPABASE_JWT_SECRET`      | HS256 fallback when no JWKS URL is configured.                                                                                                              |
+| `SUPABASE_JWT_ISSUER`      | Expected `iss` of an access token.                                                                                                                          |
+| `IP_HASH_SECRET`           | HMAC key for hashed client addresses. Rotating it invalidates old hashes.                                                                                   |
+| `REDIS_URL`                | Optional. `redis://…@127.0.0.1:6379/0` through the Access-gated `redis-tcp` tunnel; when set, rate-limit counters are shared (Redis) instead of in-process. |
+| `TELEGRAM_BOT_TOKEN`       | Telegram storage backend credential (D27).                                                                                                                  |
+| `TELEGRAM_STORAGE_CHAT_ID` | The channel the bot stores objects in.                                                                                                                      |
 
 ## Variables (repository → … → Variables)
 
 Non-secret configuration. Optional ones fall back to the defaults shown by the workflow.
 
-| Variable                                   | Default                  | Notes                                                 |
-| ------------------------------------------ | ------------------------ | ----------------------------------------------------- |
-| `STORAGE_PROVIDER`                         | `telegram-experimental`  | Must not be `none`, or uploads answer 503.            |
-| `CORS_ORIGINS`                             | (empty → CORS off)       | Comma-separated browser origins.                      |
-| `PUBLIC_BASE_URL`                          | (empty)                  | Origin used to build share links.                     |
-| `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)     | Per-deployment ceiling for a declared upload.         |
-| `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)        | Client part size; the provider may clamp it.          |
-| `TELEGRAM_API_BASE_URL`                    | Telegram cloud API       | Point at a self-hosted server to lift the 20 MiB cap. |
-| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)      | Must stay downloadable by the Bot API.                |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                    | Per principal.                                        |
-| `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                    | Per principal, part route only.                       |
-| `UPLOAD_SESSION_TTL_HOURS`                 | `24`                     | How long an incomplete upload keeps its hold.         |
-| `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                      | Open uploads at once per principal.                   |
-| `DATABASE_TUNNEL_HOSTNAME`                 | `db.opendrive.indevs.in` | Access-gated hostname the DB tunnel is dialled at.    |
+| Variable                                   | Default                         | Notes                                                 |
+| ------------------------------------------ | ------------------------------- | ----------------------------------------------------- |
+| `STORAGE_PROVIDER`                         | `telegram-experimental`         | Must not be `none`, or uploads answer 503.            |
+| `CORS_ORIGINS`                             | (empty → CORS off)              | Comma-separated browser origins.                      |
+| `PUBLIC_BASE_URL`                          | (empty)                         | Origin used to build share links.                     |
+| `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)            | Per-deployment ceiling for a declared upload.         |
+| `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)               | Client part size; the provider may clamp it.          |
+| `TELEGRAM_API_BASE_URL`                    | Telegram cloud API              | Point at a self-hosted server to lift the 20 MiB cap. |
+| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)             | Must stay downloadable by the Bot API.                |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                           | Per principal.                                        |
+| `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                           | Per principal, part route only.                       |
+| `UPLOAD_SESSION_TTL_HOURS`                 | `24`                            | How long an incomplete upload keeps its hold.         |
+| `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                             | Open uploads at once per principal.                   |
+| `DATABASE_TUNNEL_HOSTNAME`                 | `db.opendrive.indevs.in`        | Access-gated hostname the DB tunnel is dialled at.    |
+| `REDIS_TUNNEL_HOSTNAME`                    | `redis-tcp.opendrive.indevs.in` | Access-gated hostname the Redis tunnel is dialled at. |
 
 ## Running it
 
 1. Make sure a `supabase-actions` session (or your own PostgreSQL) is up and `DATABASE_URL` points
    at it.
-2. **Actions → API host (Cloudflare Tunnel) → Run workflow**, optionally setting the duration
-   (default 300 minutes, capped at 330).
+2. It runs on its own: `schedule` starts a run every four hours and `concurrency` queues it behind
+   the running one, so the API stays up without anyone pressing a button. To start one now, use
+   **Actions → API host (Cloudflare Tunnel) → Run workflow**, optionally setting the duration
+   (default 300 minutes, capped at 330). A scheduled run uses the default duration.
 3. Watch the job log: it prints when the API reports ready, then holds. The public URL is the tunnel
    hostname from step 3 of the tunnel setup.
-4. To stop early, cancel the run — the trap kills both the API and `cloudflared`.
+4. To stop early, cancel the run — the trap kills the API, `cloudflared`, and both access tunnels.
 
 The job is bounded by a 350-minute timeout so it can never outlive the runner's ceiling; the
 in-step timer ends it cleanly before that.
@@ -140,8 +150,9 @@ curl -fsS https://api.opendrive.indevs.in/openapi.json >/dev/null && echo docs o
   (`ANONYMOUS_UPLOADS_PER_DAY` / `REGISTERED_UPLOADS_PER_DAY`) and how many may be **open at once**
   (`UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL`). Storage bytes are bounded separately by the quota
   hold taken before any byte moves (D23).
-- These counters are in-process for now; a multi-instance deployment needs the shared Redis the
-  backend already provides (see `docs/ROADMAP.md`).
+- These counters are **shared across instances when `REDIS_URL` is set** (D37), and in-process
+  otherwise; `/readyz` names which store is in use. Counter sharing is what makes the limits hold
+  for the principal even if traffic lands on a different process.
 
 ## Why this is separate from CI
 
@@ -149,4 +160,4 @@ curl -fsS https://api.opendrive.indevs.in/openapi.json >/dev/null && echo docs o
 containers and **no** secrets. This workflow is the opposite: it needs credentials and holds a
 runner for hours. Keeping them in different files is what lets both contracts hold at once. Hosting
 a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict, which is why
-this only ever runs when an operator asks for it (D26, D34).
+this only ever runs when an operator asks for it or a schedule fires (D26, D34, D37).

@@ -47,6 +47,7 @@ describe('loadConfig', () => {
     expect(config.dependencies.postgres.configured).toBe(true);
     expect(config.dependencies.postgres.missingVariables).toEqual([]);
     expect(config.dependencies.redis.configured).toBe(true);
+    expect(config.redisUrl).toBe('redis://localhost:6379/0');
     expect(config.dependencies.auth.configured).toBe(true);
     expect(config.auth.configured).toBe(true);
   });

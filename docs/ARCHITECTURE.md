@@ -161,7 +161,8 @@ As of Phase 1:
 - No upload engine and no byte transfer: `POST /api/v1/uploads` and the part/complete/abort routes
   answer `501` with the phase that owns them.
 - No download route, and no deletion (`files.delete` answers `501`).
-- No Redis client, so no shared rate-limit counters across instances.
+- No shared upload-session state across instances: sessions are process-local (D31), so the
+  deployment runs a single instance. Rate-limit counters _are_ shared, through Redis (D37).
 - No storage provider implementation (the in-memory provider is a test double).
 - No browser-facing sign-in flow: the API verifies tokens, it does not issue them.
 - No malware scanning or abuse triage (Phase 4), and no deployment (Phase 5).

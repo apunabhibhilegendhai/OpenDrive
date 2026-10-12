@@ -38,6 +38,7 @@
     "@opendrive/shared": "workspace:*",
     "fastify": "5.12.5",
     "fastify-type-provider-zod": "7.0.0",
+    "ioredis": "^6.0.0",
     "jose": "6.2.12",
     "postgres": "3.4.9",
     "zod": "catalog:"

@@ -613,23 +613,25 @@ metadata routes. Splitting the ceiling by route keeps each honest. The daily-sta
 caps bound _abuse_ — how often work may begin and how much may be in flight — separately from the
 storage quota, which bounds _bytes_.
 
-**Honest limits:** the limiter and the session registry are in-process, so their counters are per
-instance. A multi-instance deployment would need the shared Redis the stack already provisions; that
-is recorded in `docs/ROADMAP.md`, and the CI `database` job already provides a Redis container for
-it.
+**Honest limits:** the session registry is in-process, so open sessions are per instance (D31).
+The limiter's counters were per instance too, until D37 wired Redis in: with `REDIS_URL` set, both
+ceilings are counted in Redis and belong to the principal regardless of which process served the
+request. The upload engine itself remains single-instance, which `api-host.yml`'s `concurrency`
+group enforces.
 
 **Guarded by:** `apps/api/src/server.test.ts` (the limiter still answering 429 with the principal
 keying in place) and `tests/integration/src/uploads.test.ts` (the open-session cap).
 
-## D34. The API is hosted on GitHub Actions behind a Cloudflare Tunnel, as an operator-triggered action
+## D34. The API is hosted on GitHub Actions behind a Cloudflare Tunnel, as an operator-triggered action - **amended by D37 (schedule)**
 
 **Chosen:** `.github/workflows/api-host.yml` builds the API and runs it for a bounded session
 (5–330 minutes) on a GitHub Actions runner, publishing it over HTTPS through a Cloudflare Tunnel
-whose token is a repository secret. It runs only on `workflow_dispatch` — never on `push` and never
-on a schedule — and it refuses to start unless `DATABASE_URL` and `CLOUDFLARE_TUNNEL_TOKEN` are set.
-The operator steps, required secrets and the one hard prerequisite (a `DATABASE_URL` the runner can
-actually reach) are in `docs/DEPLOYMENT.md`. `ci.yml` is untouched and keeps its no-secrets,
-read-only contract.
+whose token is a repository secret. It runs only on `workflow_dispatch` — never on `push` — and it
+refuses to start unless `DATABASE_URL` and `CLOUDFLARE_TUNNEL_TOKEN` are set. (D37 adds a `schedule`
+trigger: the constraint that still matters is that a _push_ never starts it, because that is the
+contract `ci.yml` is protecting.) The operator steps, required secrets and the one hard prerequisite
+(a `DATABASE_URL` the runner can actually reach) are in `docs/DEPLOYMENT.md`. `ci.yml` is untouched
+and keeps its no-secrets, read-only contract.
 
 **Why:** the cost target stays zero and the decision to use this shape was already made for the
 metadata backend (D26); hosting the API the same way is the consistent choice, and it is what turns
@@ -688,3 +690,40 @@ documented architecture into a permanent failure.
 a superuser, an owner of `public.files` and an RLS-less table stay `degraded`) and
 `apps/api/src/dependencies.test.ts` (a required probe that is `degraded` or `unavailable` still
 makes readiness `degraded`).
+
+## D37. The host action also runs on a schedule, and rate-limit counters live in Redis
+
+**Chosen:** two changes to the deployment D34 describes.
+
+1. `api-host.yml` gains `schedule: - cron: '0 */4 * * *'` beside `workflow_dispatch`. The existing
+   `concurrency: { group: api-host, cancel-in-progress: false }` serialises the two, so a scheduled
+   run is queued and takes over as the running one ends rather than running alongside it. Startup
+   tolerance is widened to match: the database pre-flight retries for about three minutes and the
+   readiness gate waits 120 s, because the backend session restarts on its own schedule.
+2. The API wires `ioredis` into `@fastify/rate-limit` when `REDIS_URL` is set, so both ceilings
+   (ordinary requests and upload parts) are counted in Redis instead of in the process. Redis is
+   reached exactly as the database is — an Access-gated TCP tunnel
+   (`cloudflared access tcp --hostname redis-tcp.opendrive.indevs.in --url 127.0.0.1:6379`, same
+   Zero Trust service token) pointed at `REDIS_URL=redis://…@127.0.0.1:6379/0`. Without `REDIS_URL`
+   the limiter stays in-process, and `/readyz` reports which store is in use.
+
+**Why:** a manual dispatch makes availability depend on someone pressing the button three times a
+day, forever. A schedule plus a serialising concurrency group gives continuity without running two
+API instances — which would be actively harmful, because upload sessions are in-process (D31), so a
+second instance behind the same tunnel would strand a multipart upload that started on the first.
+The startup retry exists for the same reason: a scheduled start can land inside the backend's own
+restart window, and failing there would turn a one-minute outage into a four-hour one. Redis is
+wired because the counters were the one part of the rate-limiting design that did not hold under
+the property it exists for: D33's counters must belong to the _principal_, not to whichever process
+happened to serve the request.
+
+**Honest limits:** the limiter is registered with `skipOnError`, so an unreachable Redis fails
+_open_ — the limiter skips instead of turning a cache outage into an API outage. Redis and Postgres
+share the same backend host, so "Redis down, Postgres up" is the narrow window in which limits
+silently disappear; `/readyz` reports `redis: unavailable` throughout it. Upload sessions stay
+in-process, so a second instance is still unsupported: Redis makes the limiter cluster-wide, not
+the upload engine, and the `concurrency` group is what keeps the deployment single-instance.
+
+**Guarded by:** `apps/api/src/dependencies.test.ts` (a wired client reports `ok` on a `PING`, a
+broken one reports `unavailable`, and because Redis is not `required` neither changes readiness).
+The live deployment reports `redis: ok` in `/readyz` with the round-trip time.

@@ -14,7 +14,7 @@ import type { AppServices } from '../services.js';
 import { SERVICE_VERSION } from '../version.js';
 
 export const systemRoutes: FastifyPluginAsyncZod<AppServices> = async (app, options) => {
-  const probes = createDependencyProbes(options.config, options.storage, options.db);
+  const probes = createDependencyProbes(options.config, options.storage, options.db, options.redis);
 
   app.get(
     '/healthz',

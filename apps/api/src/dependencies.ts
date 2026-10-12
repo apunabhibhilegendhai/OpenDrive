@@ -1,6 +1,7 @@
 import type { ApiConfig } from './config.js';
 import type { DatabaseClient } from './db/client.js';
 import { inspectDatabaseRole } from './db/role-safety.js';
+import type { RedisConnection } from './redis.js';
 import type { StorageResolution } from './storage/registry.js';
 
 /**
@@ -136,6 +137,7 @@ export function createDependencyProbes(
   config: ApiConfig,
   storage: StorageResolution,
   db?: DatabaseClient,
+  redis?: Pick<RedisConnection, 'ping'> | null,
 ): DependencyProbe[] {
   return [
     { name: 'postgres', required: true, probe: () => probePostgres(config, db) },
@@ -154,11 +156,26 @@ export function createDependencyProbes(
             config.dependencies.redis.missingVariables,
           );
         }
+        if (redis === undefined || redis === null) {
+          return {
+            status: 'degraded',
+            detail:
+              'Redis credentials are present, but no Redis client is wired into this build: rate ' +
+              'limiting runs in-process.',
+          };
+        }
+        const started = Date.now();
+        try {
+          await redis.ping();
+        } catch (error) {
+          return {
+            status: 'unavailable',
+            detail: `Redis could not be reached: ${error instanceof Error ? error.message : 'unknown error'}.`,
+          };
+        }
         return {
-          status: 'degraded',
-          detail:
-            'Redis credentials are present, but no Redis client is wired into this build: rate ' +
-            'limiting runs in-process. Redis-backed limits arrive with the upload engine.',
+          status: 'ok',
+          detail: `PING answered in ${Date.now() - started} ms. Rate limits are shared across instances.`,
         };
       },
     },

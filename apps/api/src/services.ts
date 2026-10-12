@@ -5,6 +5,8 @@ import { createDatabaseClient } from './db/client.js';
 import type { DatabaseClient, DatabaseClientOptions } from './db/client.js';
 import { createIpHasher } from './auth/ip-hash.js';
 import type { IpHasher } from './auth/ip-hash.js';
+import { createRedisConnection } from './redis.js';
+import type { RedisConnection } from './redis.js';
 import { resolveStorageProvider } from './storage/registry.js';
 import type { StorageResolution } from './storage/registry.js';
 import { UploadSessionStore } from './storage/upload-sessions.js';
@@ -24,6 +26,8 @@ export interface AppServices {
   readonly verifier: AccessTokenVerifier;
   readonly hashIp: IpHasher;
   readonly storage: StorageResolution;
+  /** Shared rate-limit store, or null when `REDIS_URL` is unset (limits stay in-process). */
+  readonly redis: RedisConnection | null;
   /** Open upload sessions. Process-local by design; see docs/DECISIONS.md (D31, D33). */
   readonly uploadSessions: UploadSessionStore;
 }
@@ -36,6 +40,8 @@ export interface CreateServicesOptions {
   readonly hashIp?: IpHasher;
   /** Database connection overrides (a scratch URL in tests, notices in development). */
   readonly database?: DatabaseClientOptions;
+  /** Injected by tests; defaults to a connection built from `REDIS_URL`. */
+  readonly redis?: RedisConnection | null;
   /** Injected by tests that need to exercise expiry without waiting for it. */
   readonly uploadSessions?: UploadSessionStore;
 }
@@ -50,6 +56,7 @@ export function createServices(
     verifier: options.verifier ?? createAccessTokenVerifier(config.auth),
     hashIp: options.hashIp ?? createIpHasher(config.ipHashSecret),
     storage: options.storage ?? resolveStorageProvider(config),
+    redis: options.redis !== undefined ? options.redis : createRedisConnection(config.redisUrl),
     uploadSessions:
       options.uploadSessions ??
       new UploadSessionStore({

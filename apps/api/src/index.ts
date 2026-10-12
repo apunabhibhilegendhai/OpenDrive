@@ -39,6 +39,7 @@ async function main(): Promise<void> {
         : 'disabled',
       postgresConfigured: config.dependencies.postgres.configured,
       redisConfigured: config.dependencies.redis.configured,
+      rateLimitStore: config.redisUrl === null ? 'in-memory' : 'redis',
     },
     'opendrive api ready',
   );

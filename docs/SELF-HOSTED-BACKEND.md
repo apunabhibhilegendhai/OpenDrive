@@ -104,15 +104,20 @@ by the same `database` tunnel, through a Cloudflare **Access** TCP route:
   reports `auth: unavailable`.
 - `SUPABASE_JWT_ISSUER=https://supabase.opendrive.indevs.in/auth/v1`
 - `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` — from the workflow run summary
-- `REDIS_URL` — via the instance's HTTPS bridge, not a raw `redis://` TCP endpoint
+- `REDIS_URL=redis://default:<REDIS_PASSWORD>@127.0.0.1:6379/0` — raw TCP through the Access-gated
+  `redis-tcp.opendrive.indevs.in` route on the `database` tunnel (the same service token as the
+  database). The `redis.opendrive.indevs.in` hostname remains the Commander web UI, not a protocol
+  endpoint.
 
 The API host reaches Postgres by dialling the Access-gated tunnel on loopback
 (`cloudflared access tcp --hostname db.opendrive.indevs.in --url 127.0.0.1:5432` with a service
 token) and pointing `DATABASE_URL` at that loopback URL; the same tunnel is available to local
-tooling via `pg-tunnel.sh`. Connected as `opendrive_app`, expect no rights beyond the `public` schema
-and, per D20/D36, `BYPASSRLS`. The session workflow also grants `opendrive_app` `EXECUTE` on the
-`public` functions (step “Grant OpenDrive runtime privileges”), because the `opendrive_*` helpers
-revoke `PUBLIC` and would otherwise fail every upload with `42501`.
+tooling via `pg-tunnel.sh`. Redis uses the identical pattern on `redis-tcp.opendrive.indevs.in`
+(`--url 127.0.0.1:6379`), which is what lets the API share rate-limit counters (D37). Connected as
+`opendrive_app`, expect no rights beyond the `public` schema and, per D20/D36, `BYPASSRLS`. The
+session workflow also grants `opendrive_app` `EXECUTE` on the `public` functions (step “Grant
+OpenDrive runtime privileges”), because the `opendrive_*` helpers revoke `PUBLIC` and would
+otherwise fail every upload with `42501`.
 
 ## Limitations (read before relying on this)
 

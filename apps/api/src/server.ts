@@ -251,6 +251,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     await app.register(rateLimit, {
       max: config.rateLimit.requestsPerMinute,
       timeWindow: '1 minute',
+      // With Redis configured the counters are shared across every API instance; without it they
+      // are held in-process. `skipOnError` makes an unreachable Redis fail *open*: a limiter
+      // outage must not become an API outage.
+      ...(services.redis === null ? {} : { redis: services.redis.client, skipOnError: true }),
       keyGenerator: (request) => {
         const identity = request.identity;
         if (identity === null || identity === undefined || identity.kind === 'none') {
@@ -271,6 +275,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     // Closing the pool belongs to whoever opened it: an injected container outlives the server.
     app.addHook('onClose', async () => {
       await services.db.close();
+      if (services.redis !== null) {
+        // The plugin wires the client into its store but never closes it: that is ours to do.
+        await services.redis.close();
+      }
     });
   }
 

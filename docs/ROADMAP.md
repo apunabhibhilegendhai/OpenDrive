@@ -55,9 +55,10 @@ file and only the right people can read it back.
    **Done:** `DELETE /files/:id` deletes the stored object, marks the locator `deleted`, then
    soft-deletes the row; the deletion token is compared against a stored digest in constant time.
 4. Redis-backed rate limiting and quota counters, so limits hold across instances.
-   **Partially done (D33):** the limiter now keys on the authenticated principal (falling back to the
-   address), part traffic has its own higher ceiling, and per-principal daily-start and open-session
-   caps exist. The counters are still in-process; moving them to Redis is the remaining work.
+   **Done (D33, D37):** the limiter keys on the authenticated principal (falling back to the
+   address), part traffic has its own higher ceiling, per-principal daily-start and open-session caps
+   exist, and with `REDIS_URL` set both ceilings are counted in Redis (D37) rather than in the
+   process. The upload _sessions_ remain process-local (D31), so the engine is still single-instance.
 5. The Telegram experiment, measured against the provider contract and either enabled with its
    measured limits or documented as rejected. Implemented and contract-verified against the test
    transport (D27); the provider now streams a single-shot whole object through a one-time disk
@@ -86,8 +87,8 @@ TLS termination, backups with a **passing restore drill**, monitoring and alerti
 
 A **development** deployment exists ahead of this phase: `.github/workflows/api-host.yml` runs the API
 for a bounded session on a GitHub Actions runner and publishes it over HTTPS through a Cloudflare
-Tunnel, triggered only by an operator. It is explicitly not production — the runner is reclaimed and
-the backend is ephemeral (D26, D34) — and the operator steps are in
+Tunnel, triggered by an operator or by a four-hourly schedule. It is explicitly not production — the
+runner is reclaimed and the backend is ephemeral (D26, D34, D37) — and the operator steps are in
 [docs/DEPLOYMENT.md](DEPLOYMENT.md). TLS termination beyond the tunnel, backups/restore drills,
 alerting and an incident runbook remain Phase 5 work.
 
@@ -136,8 +137,8 @@ evidence exists.
 - [x] **Share-token properties proven by test.** `tests/integration/src/shares.test.ts`: expiry and revocation take effect on the next resolution, refusals are indistinguishable from a token that never existed, the plaintext token appears in no column of the row, and only its digest is stored.
 - [x] **Anonymous deletion proven by test.** `tests/integration/src/uploads.test.ts`: an anonymous uploader deletes with the token issued at upload time, a wrong token is a 404, and no credential at all is a 401.
 - [ ] **No whole-file buffering.** Evidence: a 2 GiB (or the measured maximum) upload completes with the API process's resident memory staying within a small, recorded bound. The multipart path streams each part with no staging; the single-shot path spools once to local disk (never RAM) and streams from there per attempt — neither holds the object in memory, but neither is measured at 2 GiB yet.
-- [~] **Concurrent uploads from multiple principals stay bounded.** Per-principal upload throttling now exists: the limiter keys on the principal, part traffic has its own ceiling, and the engine caps open sessions and daily upload starts per principal (D33). Still open: the Telegram provider keeps upload state in process memory (`resumableUpload: false`), and the counters are per instance rather than shared. See `docs/DECISIONS.md` D31, D33.
-- [ ] **Rate limits actually shared.** Evidence: two API instances behind the same Redis reject beyond the configured limit, demonstrated with a request count above the limit. (The Redis container is already provisioned in CI for this; the counters are still in-process — D33.)
+- [~] **Concurrent uploads from multiple principals stay bounded.** Per-principal upload throttling now exists: the limiter keys on the principal, part traffic has its own ceiling, and the engine caps open sessions and daily upload starts per principal (D33). The limiter's counters are now shared through Redis when `REDIS_URL` is set (D37). Still open: the Telegram provider keeps upload state in process memory (`resumableUpload: false`), and upload _sessions_ are per instance rather than shared. See `docs/DECISIONS.md` D31, D33, D37.
+- [ ] **Rate limits actually shared.** Evidence: two API instances behind the same Redis reject beyond the configured limit, demonstrated with a request count above the limit. (The store is Redis-backed whenever `REDIS_URL` is set — D37 — but two simultaneous API instances are still unsupported because upload sessions are process-local, so this evidence has not been collected.)
 - [ ] **Backup drill passed.** Evidence: a restore into a scratch database reproduces metadata, with the command and its output recorded in `docs/DECISIONS.md`.
 
 ### Tooling and process

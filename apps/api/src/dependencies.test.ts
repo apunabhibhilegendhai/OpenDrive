@@ -54,6 +54,40 @@ describe('readiness', () => {
     expect(redis?.required).toBe(false);
   });
 
+  it('verifies Redis with a PING once a client is wired', async () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgres://opendrive:placeholder@localhost:5432/opendrive',
+      REDIS_URL: 'redis://localhost:6379/0',
+    });
+    const report = await evaluateReadiness(
+      createDependencyProbes(config, resolveStorageProvider(config), undefined, {
+        ping: async () => 'PONG',
+      }),
+    );
+    const redis = report.dependencies.find((dependency) => dependency.name === 'redis');
+    expect(redis?.status).toBe('ok');
+    expect(redis?.detail).toMatch(/PING answered/i);
+  });
+
+  it('reports an unreachable Redis as unavailable without failing readiness', async () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgres://opendrive:placeholder@localhost:5432/opendrive',
+      REDIS_URL: 'redis://localhost:6379/0',
+    });
+    const report = await evaluateReadiness(
+      createDependencyProbes(config, resolveStorageProvider(config), undefined, {
+        ping: async () => {
+          throw new Error('connection refused');
+        },
+      }),
+    );
+    const redis = report.dependencies.find((dependency) => dependency.name === 'redis');
+    expect(redis?.status).toBe('unavailable');
+    expect(redis?.detail).toContain('connection refused');
+    // Non-required: an unreachable cache degrades the report but does not refuse traffic.
+    expect(redis?.required).toBe(false);
+  });
+
   it('verifies HS256 token verification from the secret alone', async () => {
     const config = loadConfig({ SUPABASE_JWT_SECRET: 'a-complete-placeholder-secret' });
     const report = await evaluateReadiness(

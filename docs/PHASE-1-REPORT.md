@@ -164,8 +164,9 @@ No value is committed anywhere; `.env` is git-ignored and `.env.example` holds p
    download and delete routes answer `501`. "Private by default" is proven for metadata only.
 3. **Anonymous deletion is not implemented**, so the roadmap's "deletion with the correct token
    removes access" item is unproven — the routes are `501`.
-4. **Rate limiting is in-process**, therefore per-instance. Redis is not wired up. Limits do not
-   hold across two API processes.
+4. **Rate limiting is in-process unless `REDIS_URL` is set.** With Redis configured, both ceilings
+   are counted in Redis (D37) and belong to the principal; without it, the counters are per-process.
+   Upload _sessions_ are process-local either way, so the engine remains single-instance (D31).
 5. **RLS is not the control on this path.** The API connects with a role that Supabase grants
    `BYPASSRLS`, so application scoping is what protects a request. RLS protects the direct-database
    path. `/readyz` reports the connected role's hazards (superuser, owning `files`, any table
