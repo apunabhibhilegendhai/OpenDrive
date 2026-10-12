@@ -117,6 +117,10 @@ export function resolveStorageProvider(
       });
       const provider = new TelegramStorageProvider({
         transport,
+        // Keep the provider's own object ceiling equal to the size the API already advertises, so
+        // the two cannot disagree about what fits: a file the API accepts is never refused by the
+        // provider before a single byte has moved.
+        maxObjectSizeBytes: config.limits.maxFileSizeBytes,
         ...(config.telegram.maxPartSizeBytes === null
           ? {}
           : { maxPartSizeBytes: config.telegram.maxPartSizeBytes }),

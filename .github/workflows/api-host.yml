@@ -9,13 +9,18 @@
 # than alongside it. Overlap is not benign — upload sessions live in the process, so two instances
 # behind one tunnel would strand a multi-part upload on whichever instance did not see its start.
 #
-# Read docs/DEPLOYMENT.md before using it. Three things must be true first:
+# Read docs/DEPLOYMENT.md before using it. These must be true first:
 #   1. A reachable metadata database. The API opens a direct `postgres://` connection, so
 #      `DATABASE_URL` must point at a server this runner can actually reach — not the
 #      tunnel-only Supabase hostname, which exposes HTTPS but not PostgreSQL.
 #   2. A Cloudflare Tunnel whose public hostname ingress maps to `http://localhost:3000`.
 #   3. (Optional) Redis, for cluster-wide rate-limit counters. When `REDIS_URL` is set the runner
 #      opens an Access-gated TCP tunnel to `redis-tcp.<domain>` on 127.0.0.1:6379.
+#   4. (Optional) A Local Bot API server, for parts far above the public API's ~20 MiB download
+#      limit. When `TELEGRAM_API_BASE_URL` points at a loopback port, this job builds the server
+#      from a pinned upstream commit, starts it with `--local`, and routes the storage provider
+#      through it. Files still live on Telegram's servers (the server's `--dir` is only a download
+#      cache), so the runner's ephemeral disk is not a durability problem.
 #
 # Hosting a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict;
 # treat a run here as a development deployment, not a home for real user data.
@@ -46,6 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     # The runner ceiling is 6h; stay inside it and let the in-step timer end the run cleanly.
     timeout-minutes: 350
+
+    env:
+      # Upstream commit of tdlib/telegram-bot-api that the self-hosted Local Bot API server is
+      # built from. Bump deliberately (it also serves as the Actions cache key), then re-dispatch.
+      BOT_API_COMMIT: e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1
 
     steps:
       - name: Check out the repository
@@ -78,6 +88,35 @@ jobs:
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           cloudflared --version
+
+      # The storage provider can talk to a self-hosted Local Bot API server so a single part can be
+      # far larger than the public API's 20 MiB download limit. Building it compiles TDLib, which is
+      # heavy (~20 minutes), so the install tree is cached and only the first run after a commit bump
+      # pays for a build. Only the `install` tree is cached; the source and build directories live in
+      # scratch space outside the cache path.
+      - name: Restore the Local Bot API server build
+        id: botapi-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/tg-bot-api
+          key: telegram-bot-api-${{ runner.os }}-${{ env.BOT_API_COMMIT }}
+
+      - name: Build the Local Bot API server
+        if: steps.botapi-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          install_prefix="$RUNNER_TEMP/tg-bot-api"
+          src="$RUNNER_TEMP/tg-bot-api-src"
+          build="$RUNNER_TEMP/tg-bot-api-build"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ gperf libssl-dev zlib1g-dev
+          git clone --quiet https://github.com/tdlib/telegram-bot-api.git "$src"
+          git -C "$src" checkout --quiet "$BOT_API_COMMIT"
+          git -C "$src" submodule update --init --recursive
+          cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$install_prefix"
+          cmake --build "$build" --target install -j "$(nproc)"
+          test -x "$install_prefix/bin/telegram-bot-api"
+          ls -lh "$install_prefix/bin/telegram-bot-api"
 
       - name: Serve the API through the tunnel
         env:
@@ -114,6 +153,10 @@ jobs:
           IP_HASH_SECRET: ${{ secrets.IP_HASH_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_STORAGE_CHAT_ID: ${{ secrets.TELEGRAM_STORAGE_CHAT_ID }}
+          # Credentials for the self-hosted Local Bot API server (created at my.telegram.org). Only
+          # consumed when TELEGRAM_API_BASE_URL points at a loopback port we started in this job.
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
           # Zero Trust service token + hostname for the Access-gated Postgres TCP tunnel.
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
@@ -226,6 +269,45 @@ jobs:
             fi
           fi
 
+          # The storage provider may talk to a self-hosted Local Bot API server (started here) so a
+          # single part can be far larger than the public API's 20 MiB download limit. The server is
+          # started only when the operator has pointed TELEGRAM_API_BASE_URL at a loopback port and
+          # provided api_id/api_hash (my.telegram.org); otherwise the provider uses the public API
+          # unchanged. Uploaded files live on Telegram's own servers -- the server's --dir is only a
+          # download cache -- so this runner's ephemeral disk is not a durability problem.
+          botapi_pid=""
+          if [ -n "${TELEGRAM_API_BASE_URL:-}" ] && [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH:-}" ]; then
+            botapi_bin="$RUNNER_TEMP/tg-bot-api/bin/telegram-bot-api"
+            if [ ! -x "$botapi_bin" ]; then
+              echo "TELEGRAM_API_BASE_URL is set but the Local Bot API server binary is missing; rerun after the build step."
+              exit 1
+            fi
+            botapi_dir="$RUNNER_TEMP/tg-bot-api-data"
+            mkdir -p "$botapi_dir"
+            echo "Starting the Local Bot API server on 127.0.0.1:8081 ..."
+            "$botapi_bin" --api-id="$TELEGRAM_API_ID" --api-hash="$TELEGRAM_API_HASH" \
+              --local --http-ip-address=127.0.0.1 --http-port=8081 --dir="$botapi_dir" \
+              > botapi.log 2>&1 &
+            botapi_pid=$!
+            for attempt in $(seq 1 60); do
+              if curl -fsS "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null 2>&1; then
+                echo "Local Bot API server is answering after ${attempt}s."
+                break
+              fi
+              if ! kill -0 "$botapi_pid" 2>/dev/null; then
+                echo "The Local Bot API server exited during startup:"
+                cat botapi.log
+                exit 1
+              fi
+              if [ "$attempt" = 60 ]; then
+                echo "The Local Bot API server did not answer within 60s:"
+                cat botapi.log
+                exit 1
+              fi
+              sleep 1
+            done
+          fi
+
           node apps/api/dist/index.js > api.log 2>&1 &
           api_pid=$!
 
@@ -234,7 +316,8 @@ jobs:
 
           cleanup() {
             kill "$api_pid" "$tunnel_pid" \
-              ${db_tunnel_pid:+"$db_tunnel_pid"} ${redis_tunnel_pid:+"$redis_tunnel_pid"} 2>/dev/null || true
+              ${db_tunnel_pid:+"$db_tunnel_pid"} ${redis_tunnel_pid:+"$redis_tunnel_pid"} \
+              ${botapi_pid:+"$botapi_pid"} 2>/dev/null || true
           }
           trap cleanup EXIT
 
@@ -268,6 +351,8 @@ jobs:
             tail -n 50 db-tunnel.log 2>/dev/null || echo "(no db-tunnel.log)"
             echo "===== redis-tunnel.log (tail) ====="
             tail -n 50 redis-tunnel.log 2>/dev/null || echo "(no redis-tunnel.log)"
+            echo "===== botapi.log (tail) ====="
+            tail -n 50 botapi.log 2>/dev/null || echo "(no botapi.log)"
             cat api.log
             exit 1
           fi
@@ -290,3 +375,5 @@ jobs:
           tail -n 50 db-tunnel.log 2>/dev/null || echo "(no db-tunnel.log)"
           echo "===== redis-tunnel.log (tail) ====="
           tail -n 50 redis-tunnel.log 2>/dev/null || echo "(no redis-tunnel.log)"
+          echo "===== botapi.log (tail) ====="
+          tail -n 50 botapi.log 2>/dev/null || echo "(no botapi.log)"

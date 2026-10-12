@@ -17,7 +17,16 @@ export const TARGET_MAX_FILE_SIZE_BYTES = 2 * GIB;
 
 export const DEFAULT_CHUNK_SIZE_BYTES = 8 * MIB;
 export const MIN_CHUNK_SIZE_BYTES = MIB;
-export const MAX_CHUNK_SIZE_BYTES = 64 * MIB;
+/**
+ * Largest part a client may be asked to send.
+ *
+ * 2,000,000,000 bytes is the upload ceiling of a self-hosted Local Bot API server (`--local`),
+ * which is the only backend that can store a part above the public API's ~20 MiB download limit.
+ * Raising the cap is safe against the public API as well: the Telegram provider clamps the
+ * *effective* part to its own `maxPartSizeBytes`, so a large configured chunk can never make the
+ * provider accept a part it cannot store.
+ */
+export const MAX_CHUNK_SIZE_BYTES = 2_000_000_000;
 export const MAX_PARTS_PER_UPLOAD = 10_000;
 
 export const limitsConfigSchema = z.object({

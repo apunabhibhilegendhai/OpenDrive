@@ -107,23 +107,23 @@ select verify.rejected(
   'files_deletion_token_hash_check'
 );
 
--- --------------------------------------------------------------------------- files: the 2 GiB cap
+-- --------------------------------------------------------------------------- files: the 5 GiB cap
 
 select verify.rejected(
   'limits',
-  'a file one byte above 2 GiB is rejected',
+  'a file one byte above 5 GiB is rejected',
   $sql$insert into files (id, owner_user_id, original_filename, size_bytes, mime_type)
        values ('file_abcdeabcdeabcdeabcdeabcdej', '11111111-1111-4111-8111-111111111111',
-               'huge.bin', 2147483649, 'application/octet-stream')$sql$,
+               'huge.bin', 5368709121, 'application/octet-stream')$sql$,
   'files_size_bytes_check'
 );
 
 select verify.accepted(
   'limits',
-  'a file of exactly 2 GiB is accepted (the product target boundary)',
+  'a file of exactly 5 GiB is accepted (the product ceiling)',
   $sql$insert into files (id, owner_user_id, original_filename, size_bytes, mime_type)
        values ('file_abcdeabcdeabcdeabcdeabcdej', '11111111-1111-4111-8111-111111111111',
-               'huge.bin', 2147483648, 'application/octet-stream')$sql$
+               'huge.bin', 5368709120, 'application/octet-stream')$sql$
 );
 
 select verify.rejected(
@@ -364,25 +364,25 @@ select verify.rejected(
 
 select verify.rejected(
   'upload_sessions',
-  'a chunk size above the 64 MiB ceiling is rejected',
+  'a chunk size above the 2,000,000,000 B ceiling is rejected',
   $sql$insert into upload_sessions (id, file_id, declared_size_bytes, chunk_size_bytes)
-       values ('upl_bcdefbcdefbcdefbcdefbcdefb', 'file_cdefgcdefgcdefgcdefgcdefgc', 1024, 67108865)$sql$,
+       values ('upl_bcdefbcdefbcdefbcdefbcdefb', 'file_cdefgcdefgcdefgcdefgcdefgc', 1024, 2000000001)$sql$,
   'upload_sessions_chunk_size_bytes_check'
 );
 
 select verify.accepted(
   'upload_sessions',
-  'chunk sizes at both bounds (1 MiB, 64 MiB) are accepted',
+  'chunk sizes at both bounds (1 MiB, 2,000,000,000 B) are accepted',
   $sql$insert into upload_sessions (id, file_id, declared_size_bytes, chunk_size_bytes)
        values ('upl_bcdefbcdefbcdefbcdefbcdefb', 'file_cdefgcdefgcdefgcdefgcdefgc', 134217728, 1048576),
-              ('upl_cdefgcdefgcdefgcdefgcdefgc', 'file_cdefgcdefgcdefgcdefgcdefgc', 134217728, 67108864)$sql$
+              ('upl_cdefgcdefgcdefgcdefgcdefgc', 'file_cdefgcdefgcdefgcdefgcdefgc', 134217728, 2000000000)$sql$
 );
 
 select verify.rejected(
   'upload_sessions',
-  'a declared size above 2 GiB is rejected',
+  'a declared size above 5 GiB is rejected',
   $sql$insert into upload_sessions (id, file_id, declared_size_bytes, chunk_size_bytes)
-       values ('upl_fghjkfghjkfghjkfghjkfghjkm', 'file_cdefgcdefgcdefgcdefgcdefgc', 2147483649, 8388608)$sql$,
+       values ('upl_fghjkfghjkfghjkfghjkfghjkm', 'file_cdefgcdefgcdefgcdefgcdefgc', 5368709121, 8388608)$sql$,
   'upload_sessions_declared_size_bytes_check'
 );
 

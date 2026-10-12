@@ -217,8 +217,8 @@ select verify.eq(
 
 select verify.eq(
   'structure',
-  'every policy respects the 2 GiB per-file product ceiling',
-  (select count(*) from quota_limits where max_file_size_bytes > 2147483648),
+  'every policy respects the 5 GiB per-file ceiling',
+  (select count(*) from quota_limits where max_file_size_bytes > 5368709120),
   0::bigint
 );
 
@@ -310,9 +310,9 @@ select verify.eq(
 
 select verify.eq(
   'defaults',
-  'a new profile gets the 2 GiB per-file limit matching the product target',
+  'a new profile gets the 5 GiB per-file ceiling',
   (select max_file_size_bytes from profiles where id = '11111111-1111-4111-8111-111111111111'),
-  2147483648::bigint
+  5368709120::bigint
 );
 
 select verify.eq(
