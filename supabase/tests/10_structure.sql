@@ -208,10 +208,10 @@ select verify.eq(
 
 select verify.eq(
   'structure',
-  'the anonymous policy is stricter than the user policy on storage',
+  'the anonymous policy storage matches the user policy; file count is stricter',
   (select count(*) from quota_limits a, quota_limits b
     where a.principal_kind = 'anonymous' and b.principal_kind = 'user'
-      and a.storage_bytes < b.storage_bytes and a.max_files < b.max_files),
+      and a.storage_bytes = b.storage_bytes and a.max_files < b.max_files),
   1::bigint
 );
 
