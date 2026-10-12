@@ -1,0 +1,158 @@
+# Live Telegram 2 GB single-document test.
+#
+# This is deliberately NOT part of ci.yml. That workflow's contract is "no secrets, no
+# long-running use of runners", and a live round trip against Telegram needs both a bot
+# token and a self-hosted Local Bot API server. Keeping it in its own manual workflow means
+# the normal CI stays runnable by anyone who clones the repo, while this one is a bounded,
+# explicitly-authorized verification:
+#
+#   - It runs only on `workflow_dispatch` (never on push or PR), so a secret is never used
+#     by an unattended build.
+#   - The runner hosts `telegram-bot-api --local` in a container for the duration of the job,
+#     runs one upload + read-back, and tears the container and its data down. Nothing here
+#     serves traffic after the job — it is a verification, not a deployment.
+#   - The token is only handed to two places that legitimately need it: the local Bot API
+#     server and the test process. It is never printed.
+#
+# Why `--local`: the public Bot API refuses a single document above 50 MB (HTTP 413). Only a
+# self-hosted server run with `--local` accepts up to 2000 MB, which is what makes a single
+# "2 GB" (2,000,000,000-byte) document possible. See docs/STORAGE-PROVIDERS.md section 3.1.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   TELEGRAM_BOT_TOKEN        the bot whose token is logged into the local server
+#   TELEGRAM_STORAGE_CHAT_ID  target chat/channel (the bot must be an admin that can post)
+#   TELEGRAM_API_ID           from https://my.telegram.org
+#   TELEGRAM_API_HASH         from https://my.telegram.org
+#
+# NOTE: the first `logOut` step takes the bot off the public cloud Bot API so it can attach
+# to the local server. After the job the container is gone; the bot returns to the cloud on
+# its next cloud API call.
+name: Live Telegram 2 GB single-document test
+
+on:
+  workflow_dispatch:
+    inputs:
+      size_bytes:
+        description: 'Object size in bytes (Telegram --local ceiling is 2000000000)'
+        required: false
+        default: '2000000000'
+      readback:
+        description: 'Read the document back and re-verify its SHA-256'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-telegram-2gb-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  single-2gb:
+    name: Single 2 GB document round trip
+    runs-on: ubuntu-latest
+    # Spool (2 GB) + server storage (2 GB) + build; well within the hosted-runner budget.
+    timeout-minutes: 90
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+      TELEGRAM_STORAGE_CHAT_ID: ${{ secrets.TELEGRAM_STORAGE_CHAT_ID }}
+      # The Local Bot API server (container) and the file server (bundled nginx).
+      TELEGRAM_API_BASE_URL: http://127.0.0.1:8081
+      TELEGRAM_FILES_BASE_URL: http://127.0.0.1:8080
+      TELEGRAM_WORK_DIR: /var/lib/telegram-bot-api
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm (version comes from package.json packageManager)
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace libraries
+        run: pnpm build:libs
+
+      - name: Validate the requested size
+        env:
+          SIZE_BYTES: ${{ inputs.size_bytes }}
+        run: |
+          if ! [[ "$SIZE_BYTES" =~ ^[0-9]+$ ]] || (( SIZE_BYTES < 1 )) || (( SIZE_BYTES > 2000000000 )); then
+            echo "::error::size_bytes must be an integer between 1 and 2000000000 (got '$SIZE_BYTES')."
+            exit 1
+          fi
+
+      - name: Log the bot out of the public cloud Bot API
+        run: |
+          # A bot can only be attached to one API server at a time; the local server must own
+          # it. A failure here is tolerated: a token that is not currently logged in answers
+          # with an error that is irrelevant to the local run.
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" || true
+          echo "cloud logOut requested"
+
+      - name: Start the Local Bot API server (--local + bundled file server)
+        run: |
+          mkdir -p "$PWD/.tg-data"
+          docker run -d --name od-botapi \
+            -e TELEGRAM_API_ID \
+            -e TELEGRAM_API_HASH \
+            -e TELEGRAM_LOCAL=1 \
+            -e FILE_SERVER=1 \
+            -p 8081:8081 \
+            -p 8080:8080 \
+            -v "$PWD/.tg-data:/var/lib/telegram-bot-api" \
+            ghcr.io/gramiojs/telegram-bot-api:latest
+
+      - name: Wait for the server to answer getMe
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -sf "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/getMe" >/dev/null; then
+              echo "server is up after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the local Bot API server did not become ready"
+          docker logs od-botapi || true
+          exit 1
+
+      - name: Run the single-document 2 GB round trip
+        env:
+          OD_LIVE_SINGLE_2GB: '1'
+          OD_SINGLE_SIZE: ${{ inputs.size_bytes }}
+          OD_SINGLE_READBACK: ${{ inputs.readback == 'true' && '1' || '0' }}
+        run: |
+          pnpm --filter @opendrive/api exec vitest run \
+            src/storage/providers/telegram.live-single-2gb.test.ts
+
+      - name: Tear down the server
+        if: always()
+        run: |
+          docker logs od-botapi > botapi.log 2>&1 || true
+          docker rm -f od-botapi || true
+          rm -rf "$PWD/.tg-data"
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-bot-api-logs
+          path: botapi.log
+          if-no-files-found: ignore
+          retention-days: 7
