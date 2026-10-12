@@ -71,7 +71,13 @@ The 2 GB target must never require a 2 GB buffer anywhere.
   far the client got so an interrupted upload can resume instead of restarting.
 - **Bounded streaming.** `UploadPartInput.source` is an `AsyncIterable<Uint8Array>` and the
   contract forbids whole-object buffering; the in-memory double enforces a hard ceiling so a
-  violation fails a test rather than a production node.
+  violation fails a test rather than a production node. A single-shot provider upload (one
+  file rather than parts, e.g. Telegram with a `--local` server) may spool once to local disk
+  to keep memory bounded while still allowing a transient failure to be retried from byte
+  zero; it must never hold the object in RAM.
+- **Retried transfers.** Both reads and writes are retried with backoff on transient provider
+  failures (network drops, 5xx, rate limits); a non-retryable failure (e.g. a size refusal)
+  surfaces immediately rather than burning attempts.
 - **Configurable chunk sizes** with documented bounds (1 MiB – 64 MiB, default 8 MiB) and a
   part-count ceiling, resolved from the environment and validated at startup.
 - **Integrity checks.** Per-part and whole-object SHA-256, verified before a file becomes

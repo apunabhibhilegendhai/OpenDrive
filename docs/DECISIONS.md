@@ -511,3 +511,53 @@ process that performed it — which is what the storage contract requires — no
 
 **Guarded by:** `apps/api/src/storage/providers/telegram.test.ts` (the realistic fake plus an
 explicit "deleted object reads as gone even though the file still resolves" case).
+
+## D31. A single 2 GB upload is streamed with a one-time disk spool, retried, and `--local` reads are supported
+
+**Chosen:** the Telegram provider and its transport were corrected on 2026-10-12 in four ways, all
+of which the earlier documentation got wrong:
+
+1. **`--local` is what raises Telegram's ceilings, not `TELEGRAM_MAX_PART_SIZE_BYTES` on its own.**
+   A self-hosted `telegram-bot-api` server behaves exactly like the cloud API — 50 MB upload,
+   20 MiB download — unless it is started with `--local`; `--dir` only picks where files are
+   cached. `docs/STORAGE-PROVIDERS.md` §3.1 and `.env.example` now say so, and the earlier claim
+   that `--dir` "lifts the 20 MiB ceiling" is removed.
+2. **The single-shot path no longer buffers the whole object.** `uploadWholeObject` refused a
+   stream above the part ceiling and `sendDocument` assembled a `File` from the entire buffer,
+   violating the "no whole-object buffering" rule in `packages/shared/src/storage/types.ts` and
+   `docs/ARCHITECTURE.md` §3. A streamed whole object is now spooled exactly once to a temp file
+   while its SHA-256 is computed, and sent as a hand-built multipart body (`duplex: 'half'`) that
+   frames the parts around the caller's chunks. Memory stays bounded to a part for multipart and
+   to a write buffer for single-shot; the multipart path still stages one bounded part in memory.
+3. **Uploads are retried like reads.** `uploadPartBytes` retries retryable `sendDocument`
+   failures with the same backoff the read path uses. Because a stream cannot be rewound, the
+   spool is what makes a retry correct: each attempt reads a fresh stream from the spooled file,
+   so it restarts at byte zero instead of resuming an exhausted generator. A checksum mismatch is
+   computed before the send and leaves no orphan; a size refusal (`Payload too large`) is never
+   retried.
+4. **`--local` downloads are supported.** With `--local`, `getFile` returns an absolute on-disk
+   path. `download()` now reads it from the local filesystem when the API shares the server's
+   disk, or — when it does not — rewrites it through `TELEGRAM_FILES_BASE_URL` +
+   `TELEGRAM_WORK_DIR` (a file server exposing the server's `--dir`). An absolute path with a file
+   base URL but no work dir is refused with a configuration error rather than mis-fetched.
+
+**Why:** the user's requirement is a _single_ file up to 2 GB uploaded via Telegram. The only
+route to a single file above 20 MiB is a `--local` server, and the honest implementation of that
+route (stream it, retry it, and read it back) is what these changes deliver. Buffering a
+multi-gigabyte object in the API process would OOM a production node; a streamed upload with no
+retry would lose the whole transfer to a single dropped connection over the minutes it takes.
+
+**Honest limits (unchanged or newly explicit):** a true 2 GiB file (2,147,483,648 bytes) still
+cannot be delivered as one Telegram upload — the server's local ceiling is 2000 MB
+(2,000,000,000 bytes) — so the largest objects continue to use multipart, and
+`maxFileSizeVerified` stays `false` until a `--local` server is actually measured. Upload sessions
+remain process-local (`resumableUpload: false`), and the global 120 req/min limiter is small
+relative to the hundreds of part requests a 2 GiB multipart upload issues, so multi-principal
+concurrency is bounded by the shared bot token, not by per-principal quotas. Those gaps are
+recorded in `docs/ROADMAP.md` rather than hidden.
+
+**Guarded by:** `apps/api/src/storage/providers/telegram.test.ts` (spool + retry of a streamed
+whole object; part-upload retry; a size refusal that is _not_ retried; streamed whole-object size
+and checksum mismatches that send nothing; streaming multipart framing; `--local` disk read;
+file-server rewrite; and the missing-work-dir refusal) and `apps/api/src/config.test.ts` (the two
+new environment variables).

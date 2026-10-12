@@ -34,7 +34,7 @@ contract suite in `packages/shared/src/storage/testing/storage-contract.ts` pass
 | deleteIsFinal        | yes                                   | no: `deleteMessage` removes the message, but Telegram keeps serving the file (measured live: still downloadable 35s later), so deletion is recorded in-process, never provable | provider-dependent                       |
 | maxObjectSizeBytes   | 16 MiB (configurable)                 | 2 GiB configured target (no hard Telegram ceiling once objects are split into parts)                                                                                           | provider-dependent                       |
 | minPartSizeBytes     | 1 byte                                | 1 byte                                                                                                                                                                         | provider-dependent                       |
-| maxPartSizeBytes     | 1 MiB (configurable)                  | 20 MiB — the standard Bot API download ceiling; raise with a Local Bot API server                                                                                              | provider-dependent                       |
+| maxPartSizeBytes     | 1 MiB (configurable)                  | 20 MiB default — the standard Bot API download ceiling; raise it (up to the server's 2000 MB) only with a `--local` Bot API server, see §3.1                                   | provider-dependent                       |
 | Cost                 | free                                  | free, within the account's own limits                                                                                                                                          | provider-dependent                       |
 
 `memory-test` is a **test double**: bytes live in the process heap, are lost on restart, are
@@ -67,27 +67,36 @@ is enabled for real files:
    objects stored there.
 6. **Size and streaming.** The standard Bot API can upload a document up to its own per-file
    ceiling but can only download single files up to 20 MiB. The provider therefore splits
-   objects into parts at or below 20 MiB (default) and streams each part with bounded memory —
-   no local-disk spooling is needed even for multi-gigabyte objects. Retrieval is whole-object:
-   a read streams the concatenation of the parts, and ranged reads are not supported.
-   Verification (part of `finalizeUpload`) reads the parts back through a bounded window
-   (`maxVerifyConcurrency`, further capped by a byte budget) rather than one at a time, because
-   live measurement showed single-stream reads are throttled to ≈0.17 MiB/s and a sequential
-   verify would take hours at the 2 GiB target. Each part is read whole so a transient drop can
-   be retried from scratch, and every read failure is surfaced as `STORAGE_UNAVAILABLE`.
+   objects into parts at or below 20 MiB (default) and streams each part with bounded memory;
+   multipart delivery needs no local-disk staging even for multi-gigabyte objects. A
+   _whole-object_ (single-shot) upload must fit in one Telegram file, so it is refused above
+   the part ceiling. When such an upload arrives as a stream it is spooled once to a temp file
+   — never buffered whole in memory — and each attempt streams a fresh copy from disk, so a
+   transient failure is retried from byte zero instead of resuming an exhausted stream.
+   Retrieval is whole-object: a read streams the concatenation of the parts, and ranged reads
+   are not supported. Verification (part of `finalizeUpload`) reads the parts back through a
+   bounded window (`maxVerifyConcurrency`, further capped by a byte budget) rather than one at
+   a time, because live measurement showed single-stream reads are throttled to ≈0.17 MiB/s
+   and a sequential verify would take hours at the 2 GiB target. Each part is read whole so a
+   transient drop can be retried from scratch, and every read failure is surfaced as
+   `STORAGE_UNAVAILABLE`. Transient upload failures are retried with backoff the same way.
 
-### 3.1 Optional self-hosted Local Bot API server (the route to the 2 GiB target)
+### 3.1 Optional self-hosted Local Bot API server (the route to 2000 MB per file)
 
-The 20 MiB download ceiling belongs to the **public** Bot API, not to Telegram. A self-hosted
-[Bot API server](https://github.com/tdlib/telegram-bot-api), configured with the MTProto
-application credentials from my.telegram.org (`api_id` / `api_hash`), raises the per-file ceiling
-to 2 GB and is the intended way to reach the 2 GiB target without splitting an object into a
-hundred parts:
+The 20 MiB download ceiling and the 50 MB upload ceiling belong to the **public** Bot API, not
+to Telegram. A self-hosted [Bot API server](https://github.com/tdlib/telegram-bot-api),
+configured with the MTProto application credentials from my.telegram.org (`api_id` /
+`api_hash`), can raise them — but **only when it is started with `--local`**. Without `--local`
+the server behaves like the cloud API and keeps the same upload/download limits; its `--dir`
+merely chooses where files are cached. Raising `TELEGRAM_MAX_PART_SIZE_BYTES` while pointing at
+a non-`--local` server does not lift the ceiling and makes large parts fail.
 
 ```sh
+# --local is the flag that raises the limits; --dir is only the storage location.
 telegram-bot-api \
   --api-id="$TELEGRAM_API_ID" \
   --api-hash="$TELEGRAM_API_HASH" \
+  --local \
   --http-port=8081 \
   --dir=/var/lib/telegram-bot-api
 ```
@@ -98,18 +107,49 @@ STORAGE_PROVIDER=telegram-experimental
 TELEGRAM_BOT_TOKEN=<bot token>
 TELEGRAM_STORAGE_CHAT_ID=<chat id>
 TELEGRAM_API_BASE_URL=http://127.0.0.1:8081
-TELEGRAM_MAX_PART_SIZE_BYTES=20971520   # raise toward 2 GiB once the server is in place
+# Up to the server's 2000 MB ceiling (≈1.95 GiB), which is still below the 2 GiB target.
+TELEGRAM_MAX_PART_SIZE_BYTES=2000000000
 ```
+
+With `--local`, `getFile` returns an **absolute on-disk path** instead of an HTTP URL, so the
+provider reads the bytes straight from the filesystem when the API process shares the server's
+disk. When it does not (the API runs elsewhere), set both of:
+
+```dotenv
+TELEGRAM_WORK_DIR=/var/lib/telegram-bot-api            # the server's --dir
+TELEGRAM_FILES_BASE_URL=https://files.example/telegram # a file server exposing --dir
+```
+
+The provider then rewrites the absolute path to `${TELEGRAM_FILES_BASE_URL}/<path relative to
+TELEGRAM_WORK_DIR>` (an nginx location serving `--dir` works). Without either, a local absolute
+path is read from disk; an absolute path with `TELEGRAM_FILES_BASE_URL` but no `TELEGRAM_WORK_DIR`
+is refused with a configuration error rather than silently mis-fetched. The public API never
+returns absolute paths, so nothing extra is configured for the cloud path.
 
 `api_id` / `api_hash` configure the **server**, not the app: `loadConfig` never reads them, and
 they live in `.env` only so an operator keeps them with the rest of the configuration. They do
 not replace the bot token — a self-hosted server authenticates the same way the public one does.
-Add `--local` only when the API host can read the server's `--dir` directly: it makes `getFile`
-return on-disk paths instead of HTTP URLs, which this provider does not read.
+Before pointing the app at a new local server, call the Bot API `logOut` method on the bot's
+**previous** server (a token is logged in to one server at a time); a bot logged in to two servers
+may silently drop updates. The local server speaks plain HTTP only, so put it behind a TLS
+termination proxy for any remote access.
 
-> **Partly verified.** A bot token and a private channel were supplied, and the provider was driven
-> against the live Bot API on 2026-10-11 (see D27 and D29). The 2 GB `--local` ceiling itself is
-> still unmeasured — no local Bot API server is running.
+> **Confirmed in the upstream README.** `tdlib/telegram-bot-api` states that `--local` is what
+> enables features unavailable at `https://api.telegram.org`: "Upload files up to 2000 MB" and
+> "Receive the absolute local path as a value of the `file_path` field". Without `--local` the
+> server keeps the cloud API's limits, so `--dir` alone changes nothing.
+
+> **Two ceilings, not one.** The server's documented local upload limit is **2000 MB**, which is
+> 2,000,000,000 bytes — _less_ than the 2 GiB product target (`TARGET_MAX_FILE_SIZE_BYTES` =
+> 2,147,483,648 bytes). A true 2 GiB single file therefore still exceeds what one `--local`
+> upload can carry, so the largest objects keep using multipart delivery; raise
+> `TELEGRAM_MAX_PART_SIZE_BYTES` to e.g. 1,500,000,000 so a 2 GiB object is only two parts.
+
+> **Partly verified.** A bot token and a private channel were supplied, and the provider was
+> driven against the live Bot API on 2026-10-11 (see D27 and D29). The 2000 MB `--local` ceiling
+> and its absolute-path `getFile` behaviour are still unmeasured against a running local server;
+> the disk / file-server read paths and the streaming, retrying upload are covered by unit tests
+> only.
 
 Consequence for the product: `STORAGE_PROVIDER=telegram-experimental` resolves to a **real
 provider** (experimental, `productionSafe: false`) when the Telegram credentials are present, and

@@ -94,6 +94,10 @@ export function resolveStorageProvider(
         botToken,
         chatId,
         ...(config.telegram.apiBaseUrl === null ? {} : { apiBaseUrl: config.telegram.apiBaseUrl }),
+        ...(config.telegram.filesBaseUrl === null
+          ? {}
+          : { filesBaseUrl: config.telegram.filesBaseUrl }),
+        ...(config.telegram.workDir === null ? {} : { workDir: config.telegram.workDir }),
       });
       const provider = new TelegramStorageProvider({
         transport,

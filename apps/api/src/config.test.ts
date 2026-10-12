@@ -106,6 +106,21 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ STORAGE_CHUNK_SIZE_BYTES: '-5' })).toThrow(/positive integer/);
   });
 
+  it('parses the --local Bot API server file-serving settings', () => {
+    const config = loadConfig({
+      TELEGRAM_WORK_DIR: '/var/lib/telegram-bot-api',
+      TELEGRAM_FILES_BASE_URL: 'https://files.example/telegram',
+    });
+    expect(config.telegram.workDir).toBe('/var/lib/telegram-bot-api');
+    expect(config.telegram.filesBaseUrl).toBe('https://files.example/telegram');
+    const unset = loadConfig({});
+    expect(unset.telegram.workDir).toBeNull();
+    expect(unset.telegram.filesBaseUrl).toBeNull();
+    expect(() => loadConfig({ TELEGRAM_FILES_BASE_URL: 'not-a-url' })).toThrow(
+      /TELEGRAM_FILES_BASE_URL/,
+    );
+  });
+
   it('enables API docs outside production and keeps them opt-in inside it', () => {
     expect(loadConfig({}).docsEnabled).toBe(true);
     expect(loadConfig({ NODE_ENV: 'test' }).docsEnabled).toBe(true);

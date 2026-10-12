@@ -50,7 +50,10 @@ file and only the right people can read it back.
 4. Redis-backed rate limiting and quota counters, so limits hold across instances.
 5. The Telegram experiment, measured against the provider contract and either enabled with its
    measured limits or documented as rejected. Implemented and contract-verified against the test
-   transport (D27); real-API limits are still unmeasured, so it is not yet enabled for bytes.
+   transport (D27); the provider now streams a single-shot whole object through a one-time disk
+   spool with bounded memory and retries transient uploads, and reads `--local` absolute paths
+   from disk or a file-server base URL (D31). Real-API limits are still unmeasured, so it is not
+   yet enabled for bytes.
 
 Background processing follows the same phase: job queue on Redis behind the existing `JobQueue`
 interface, retention jobs implemented, orphan reconciliation.
@@ -105,6 +108,8 @@ evidence exists.
 
 - [ ] **Capabilities measured, not assumed.** Evidence: the provider's real maximum object size measured by uploading progressively larger objects, with the date and the resulting number recorded in `docs/DECISIONS.md`.
 - [~] **Contract suite passes against the provider.** `describeStorageProviderContract` passes against `TelegramStorageProvider` (2026-10-11) using the in-memory fake transport, including capability-failure paths (range read refusal, checksum mismatch, idempotent delete). Real-API verification remains pending — see `docs/DECISIONS.md` D27. Evidence: `apps/api/src/storage/providers/telegram.test.ts`.
+- [x] **Transient transfers retried.** The provider retries retryable read _and_ upload failures with backoff; a streamed whole-object upload is spooled once to disk so each attempt re-reads from byte zero, and a non-retryable size refusal is surfaced immediately (2026-10-12). Evidence: `telegram.test.ts` — "streams a whole-object upload through a spool and retries transient failures", "retries a transient part-upload failure and still verifies", "does not retry a Telegram size refusal". See `docs/DECISIONS.md` D31.
+- [ ] **A `--local` server measured.** Evidence: a self-hosted `telegram-bot-api --local` server, with a single file above 20 MiB uploaded and downloaded through it, and the measured maximum recorded in `docs/DECISIONS.md`. The `--local` absolute-path `getFile` behaviour and the 2000 MB ceiling are still unmeasured.
 - [ ] **Interruption and resume demonstrated.** Evidence: a multi-part upload killed mid-way, then resumed, produces byte-identical content with a matching whole-file checksum.
 - [ ] **Orphan cleanup demonstrated.** Evidence: an aborted upload leaves no retrievable object, or the cleanup job removes it, with before/after object counts.
 
@@ -113,7 +118,8 @@ evidence exists.
 - [~] **Private by default proven by test.** Metadata half done: `tests/integration/src/ownership.test.ts` shows another principal's file is invisible and refused, and that ownership comes from the database rather than the request. The byte half is blocked on the download route, which still answers `501`; the test must be extended when it moves.
 - [x] **Share-token properties proven by test.** `tests/integration/src/shares.test.ts`: expiry and revocation take effect on the next resolution, refusals are indistinguishable from a token that never existed, the plaintext token appears in no column of the row, and only its digest is stored.
 - [ ] **Anonymous deletion proven by test.** Blocked on `files.delete` and `anonymous_sessions` deletion, which are not implemented (both answer `501`).
-- [ ] **No whole-file buffering.** Evidence: a 2 GiB (or the measured maximum) upload completes with the API process's resident memory staying within a small, recorded bound.
+- [ ] **No whole-file buffering.** Evidence: a 2 GiB (or the measured maximum) upload completes with the API process's resident memory staying within a small, recorded bound. The multipart path streams each part with no staging; the single-shot path spools once to local disk (never RAM) and streams from there per attempt — neither holds the object in memory, but neither is measured at 2 GiB yet.
+- [ ] **Concurrent uploads from multiple principals stay bounded.** Evidence: many simultaneous uploads from distinct principals do not exhaust a single bot token's per-chat flood limits or the process's memory, and per-principal upload throttling holds across instances. Known gaps today: the Telegram provider keeps upload state in process memory (`resumableUpload: false`), the global limiter is 120 req/min while one 2 GiB multipart upload alone issues hundreds of part requests, and there is no per-principal upload limit. See `docs/DECISIONS.md` D31.
 - [ ] **Rate limits actually shared.** Evidence: two API instances behind the same Redis reject beyond the configured limit, demonstrated with a request count above the limit.
 - [ ] **Backup drill passed.** Evidence: a restore into a scratch database reproduces metadata, with the command and its output recorded in `docs/DECISIONS.md`.
 

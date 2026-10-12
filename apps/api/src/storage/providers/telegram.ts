@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import {
   AppError,
   assertCapability,
@@ -53,9 +58,14 @@ import {
  * Honest limits (see `capabilities` and docs/STORAGE-PROVIDERS.md):
  * - The standard Bot API cannot download a single file above 20 MiB, so parts default to
  *   20 MiB and objects are split into as many parts as needed. A self-hosted Local Bot API
- *   server lifts that ceiling (TELEGRAM_MAX_PART_SIZE_BYTES).
+ *   server run with `--local` lifts that ceiling (TELEGRAM_MAX_PART_SIZE_BYTES, up to
+ *   2000 MB) and returns absolute on-disk paths from `getFile`, which the transport reads
+ *   from disk or rewrites through a configured file-server base URL.
  * - A whole-object upload must fit in one Telegram file, so `uploadWholeObject` refuses
- *   anything above the part ceiling; large objects must use multipart.
+ *   anything above the part ceiling; large objects must use multipart. A streamed whole
+ *   object is spooled once to a temp file (never buffered whole in memory) and each upload
+ *   attempt re-reads the spool, so transient failures are retried from byte zero.
+ * - Transient upload failures are retried with backoff, mirroring the read path.
  * - No checksumming, range reads, direct download URLs or server-side state survive
  *   restarts, so those capabilities are declared false.
  * - Durability is not guaranteed: Telegram retention is policy, not contract.
@@ -67,6 +77,9 @@ const DEFAULT_SESSION_TTL_SECONDS = 24 * 60 * 60;
 /** Transient read failures are retried this many times before the part is given up on. */
 const DEFAULT_READ_RETRY_ATTEMPTS = 4;
 const DEFAULT_READ_RETRY_DELAY_MS = 500;
+/** Transient upload failures (network drops, 5xx, rate limits) are retried with backoff. */
+const DEFAULT_UPLOAD_RETRY_ATTEMPTS = 4;
+const DEFAULT_UPLOAD_RETRY_DELAY_MS = 500;
 /** Cap on parts read at once while verifying, before the memory budget below is applied. */
 const DEFAULT_MAX_VERIFY_CONCURRENCY = 8;
 /** Bytes the verify pass may hold in flight; keeps a large part size from buffering the object. */
@@ -86,6 +99,17 @@ export interface TelegramStorageProviderOptions {
   readRetryAttempts?: number;
   /** Base backoff between read retries in milliseconds; tests pass 0 for instant retries. */
   readRetryDelayMs?: number;
+  /** How many times a transient upload failure is retried before it is surfaced. */
+  uploadRetryAttempts?: number;
+  /** Base backoff between upload retries in milliseconds; tests pass 0 for instant retries. */
+  uploadRetryDelayMs?: number;
+  /**
+   * Directory used to spool a streamed whole-object upload once to disk (see
+   * `DEFAULT_*`): memory stays bounded to a part, the checksum is computed before anything
+   * is sent, and each upload attempt re-reads the spool so a transient failure can be
+   * retried from byte zero. Defaults to the OS temp directory.
+   */
+  spoolDir?: string;
   /**
    * Upper bound on parts read concurrently while verifying a finalized upload. Also bounded
    * internally by a memory budget, so a provider with a very large part size reads fewer
@@ -228,6 +252,56 @@ function isRetryableTelegramError(error: unknown): boolean {
   return error instanceof TelegramApiError && error.retryable;
 }
 
+/**
+ * Streams a whole object to a temp file while hashing it, refusing to exceed `declaredBytes`.
+ * Memory stays bounded to a write buffer; the returned checksum and byte count let the caller
+ * enforce integrity before anything is uploaded.
+ */
+async function spoolWholeObject(
+  source: ByteStream,
+  declaredBytes: number,
+  dir: string,
+): Promise<{ filePath: string; checksum: string; actualBytes: number }> {
+  const filePath = join(dir, 'object.bin');
+  const hash = createHash('sha256');
+  let total = 0;
+  const hashing = (async function* generate(): ByteStream {
+    for await (const chunk of source) {
+      total += chunk.byteLength;
+      if (total > declaredBytes) {
+        throw providerLimitExceeded(
+          `Streamed payload exceeds the accepted maximum of ${declaredBytes} bytes`,
+        );
+      }
+      hash.update(chunk);
+      yield chunk;
+    }
+  })();
+  await pipeline(hashing, createWriteStream(filePath));
+  return { filePath, checksum: hash.digest('hex'), actualBytes: total };
+}
+
+/** Re-reads a spooled file as a fresh stream, so each upload attempt starts at byte zero. */
+function localFileStream(filePath: string): ByteStream {
+  return (async function* generate(): ByteStream {
+    try {
+      for await (const chunk of createReadStream(filePath)) {
+        yield chunk;
+      }
+    } catch (error) {
+      // A failure reading the spooled copy is transient at the transport's level: the retry
+      // loop re-opens the file and starts over.
+      throw new TelegramApiError(
+        `Spooled file "${filePath}" could not be read.`,
+        '',
+        null,
+        true,
+        error,
+      );
+    }
+  })();
+}
+
 export class TelegramStorageProvider implements StorageProvider {
   readonly providerId: string;
   readonly displayName: string;
@@ -259,7 +333,10 @@ export class TelegramStorageProvider implements StorageProvider {
   private readonly sessionTtlSeconds: number;
   private readonly readRetryAttempts: number;
   private readonly readRetryDelayMs: number;
+  private readonly uploadRetryAttempts: number;
+  private readonly uploadRetryDelayMs: number;
   private readonly maxVerifyConcurrency: number;
+  private readonly spoolDir: string;
   private readonly now: () => Date;
 
   constructor(options: TelegramStorageProviderOptions) {
@@ -271,7 +348,10 @@ export class TelegramStorageProvider implements StorageProvider {
     this.sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
     this.readRetryAttempts = options.readRetryAttempts ?? DEFAULT_READ_RETRY_ATTEMPTS;
     this.readRetryDelayMs = options.readRetryDelayMs ?? DEFAULT_READ_RETRY_DELAY_MS;
+    this.uploadRetryAttempts = options.uploadRetryAttempts ?? DEFAULT_UPLOAD_RETRY_ATTEMPTS;
+    this.uploadRetryDelayMs = options.uploadRetryDelayMs ?? DEFAULT_UPLOAD_RETRY_DELAY_MS;
     this.maxVerifyConcurrency = options.maxVerifyConcurrency ?? DEFAULT_MAX_VERIFY_CONCURRENCY;
+    this.spoolDir = options.spoolDir ?? tmpdir();
     this.now = options.now ?? (() => new Date());
     this.capabilities = {
       multipartUpload: true,
@@ -423,7 +503,8 @@ export class TelegramStorageProvider implements StorageProvider {
     const receipt = await this.uploadPartBytes({
       partNumber: part.partNumber,
       fileId: upload.input.fileId,
-      bytes,
+      sizeBytes: bytes.byteLength,
+      openSource: () => bytes,
     });
     upload.parts.set(part.partNumber, {
       partNumber: part.partNumber,
@@ -440,33 +521,54 @@ export class TelegramStorageProvider implements StorageProvider {
     };
   }
 
-  /** Sends one part through the transport, translating Telegram failures into provider errors. */
+  /**
+   * Sends one Telegram document, retrying transient failures with backoff. `openSource`
+   * must produce a fresh byte source per attempt — parts hand back the same buffer; a
+   * streamed whole object produces a fresh stream from its spooled copy — so a retry always
+   * restarts from byte zero instead of resuming an exhausted stream.
+   */
   private async uploadPartBytes(input: {
     partNumber: number;
     fileId: string;
-    bytes: Uint8Array;
+    sizeBytes: number;
+    openSource: () => ByteSource;
   }): Promise<TelegramUploadReceipt> {
-    try {
-      return await this.transport.sendDocument({
-        filename: `${input.fileId}-part${input.partNumber}.bin`,
-        mimeType: 'application/octet-stream',
-        bytes: input.bytes,
-        caption: `od part ${input.partNumber}`,
-      });
-    } catch (error) {
-      if (error instanceof TelegramPayloadTooLargeError) {
-        throw providerLimitExceeded(
-          `Telegram refused part ${input.partNumber}: ${error.description}`,
-        );
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.uploadRetryAttempts; attempt += 1) {
+      try {
+        return await this.transport.sendDocument({
+          filename: `${input.fileId}-part${input.partNumber}.bin`,
+          mimeType: 'application/octet-stream',
+          source: input.openSource(),
+          sizeBytes: input.sizeBytes,
+          caption: `od part ${input.partNumber}`,
+        });
+      } catch (error) {
+        if (!isRetryableTelegramError(error)) this.throwUploadFailure(input, error);
+        lastError = error;
+        if (attempt < this.uploadRetryAttempts) {
+          await sleep(this.uploadRetryDelayMs * attempt);
+        }
       }
-      if (error instanceof TelegramApiError) {
-        throw storageUnavailable(
-          `Telegram upload of part ${input.partNumber} failed: ${error.description}`,
-          error,
-        );
-      }
-      throw storageUnavailable(`Telegram upload of part ${input.partNumber} failed.`, error);
     }
+    this.throwUploadFailure(input, lastError);
+  }
+
+  /** Maps an upload failure onto the provider's error taxonomy. Always throws. */
+  private throwUploadFailure(input: { partNumber: number }, error: unknown): never {
+    if (error instanceof AppError) throw error;
+    if (error instanceof TelegramPayloadTooLargeError) {
+      throw providerLimitExceeded(
+        `Telegram refused part ${input.partNumber}: ${error.description}`,
+      );
+    }
+    if (error instanceof TelegramApiError) {
+      throw storageUnavailable(
+        `Telegram upload of part ${input.partNumber} failed: ${error.description}`,
+        error,
+      );
+    }
+    throw storageUnavailable(`Telegram upload of part ${input.partNumber} failed.`, error);
   }
 
   async uploadWholeObject(input: UploadWholeObjectInput): Promise<StoredObject> {
@@ -487,30 +589,84 @@ export class TelegramStorageProvider implements StorageProvider {
     }
     upload.mode = 'single-shot';
 
-    const bytes = await this.stageBytes(input.source, input.sizeBytes);
-    const checksum = await sha256HexOfBytes(bytes);
-    const declared = input.checksumSha256 ?? upload.input.checksumSha256 ?? null;
-    if (declared !== null && declared !== checksum) {
-      // Nothing becomes readable on mismatch: the object is never registered.
-      throw integrityCheckFailed('Whole-object checksum mismatch: nothing becomes readable.');
-    }
-
-    const receipt = await this.uploadPartBytes({
-      partNumber: 1,
+    const { receipt, checksum } = await this.sendWholeObject({
       fileId: upload.input.fileId,
-      bytes,
+      source: input.source,
+      sizeBytes: input.sizeBytes,
+      checksumSha256: input.checksumSha256 ?? upload.input.checksumSha256 ?? null,
     });
     upload.parts.set(1, {
       partNumber: 1,
       messageId: receipt.messageId,
       fileId: receipt.fileId,
-      fileSize: bytes.byteLength,
+      fileSize: input.sizeBytes,
     });
-    upload.receivedBytes = bytes.byteLength;
+    upload.receivedBytes = input.sizeBytes;
     upload.session = { ...upload.session, state: 'in_progress' };
     const staged = upload.parts.get(1);
     if (staged === undefined) throw new AppError('INTERNAL', { detail: 'Staged part 1 vanished.' });
     return this.commitUpload(upload, [staged], checksum);
+  }
+
+  /**
+   * Sends a whole object as a single Telegram document, streaming with bounded memory.
+   *
+   * A buffered `Uint8Array` is sent directly. A stream is spooled once to a temp file: the
+   * checksum is computed while spooling and verified BEFORE anything is sent (a mismatch
+   * must not leave an orphan document in the chat), and each upload attempt reads a fresh
+   * stream from the spool so a transient failure retries from byte zero instead of resuming
+   * an exhausted stream. Memory never holds the whole object.
+   */
+  private async sendWholeObject(input: {
+    fileId: string;
+    source: ByteSource;
+    sizeBytes: number;
+    checksumSha256: string | null;
+  }): Promise<{ receipt: TelegramUploadReceipt; checksum: string }> {
+    if (input.source instanceof Uint8Array) {
+      if (input.source.byteLength !== input.sizeBytes) {
+        throw integrityCheckFailed(
+          `Declared ${input.sizeBytes} bytes but received ${input.source.byteLength}.`,
+        );
+      }
+      const checksum = await sha256HexOfBytes(input.source);
+      this.assertWholeObjectChecksum(checksum, input.checksumSha256);
+      const receipt = await this.uploadPartBytes({
+        partNumber: 1,
+        fileId: input.fileId,
+        sizeBytes: input.sizeBytes,
+        openSource: () => input.source,
+      });
+      return { receipt, checksum };
+    }
+
+    const dir = await mkdtemp(join(this.spoolDir, 'opendrive-upload-'));
+    try {
+      const spooled = await spoolWholeObject(input.source, input.sizeBytes, dir);
+      if (spooled.actualBytes !== input.sizeBytes) {
+        throw integrityCheckFailed(
+          `Declared ${input.sizeBytes} bytes but received ${spooled.actualBytes}.`,
+        );
+      }
+      this.assertWholeObjectChecksum(spooled.checksum, input.checksumSha256);
+      const receipt = await this.uploadPartBytes({
+        partNumber: 1,
+        fileId: input.fileId,
+        sizeBytes: input.sizeBytes,
+        openSource: () => localFileStream(spooled.filePath),
+      });
+      return { receipt, checksum: spooled.checksum };
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private assertWholeObjectChecksum(actual: string, declared: string | null): void {
+    if (declared !== null && declared !== actual) {
+      // Nothing becomes readable on mismatch: the object is never registered, and because the
+      // checksum is known before the send, nothing is uploaded to Telegram either.
+      throw integrityCheckFailed('Whole-object checksum mismatch: nothing becomes readable.');
+    }
   }
 
   async finalizeUpload(session: UploadSession): Promise<StoredObject> {

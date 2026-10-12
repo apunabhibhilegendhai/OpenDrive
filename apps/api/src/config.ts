@@ -95,6 +95,10 @@ const environmentSchema = z.object({
   TELEGRAM_STORAGE_CHAT_ID: optionalString,
   TELEGRAM_API_BASE_URL: optionalUrl,
   TELEGRAM_MAX_PART_SIZE_BYTES: optionalPositiveInt,
+  // `--local` mode of a self-hosted Bot API server. getFile then returns absolute on-disk
+  // paths; the API reads them from disk (same host) or serves them through FILES_BASE_URL.
+  TELEGRAM_WORK_DIR: optionalString,
+  TELEGRAM_FILES_BASE_URL: optionalUrl,
 
   MALWARE_SCAN_ENABLED: booleanFromEnv,
 });
@@ -130,6 +134,10 @@ export interface ApiConfig {
     readonly configured: boolean;
     readonly apiBaseUrl: string | null;
     readonly maxPartSizeBytes: number | null;
+    /** `--dir` of a `--local` Bot API server; used to relativise its absolute file paths. */
+    readonly workDir: string | null;
+    /** Base URL of a file server serving that `--dir`, for when the API cannot read its disk. */
+    readonly filesBaseUrl: string | null;
   };
   /** Metadata-database connection string, or null when the deployment is not configured. */
   readonly databaseUrl: string | null;
@@ -246,6 +254,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       configured: dependency(env, ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_STORAGE_CHAT_ID']).configured,
       apiBaseUrl: values.TELEGRAM_API_BASE_URL ?? null,
       maxPartSizeBytes: values.TELEGRAM_MAX_PART_SIZE_BYTES ?? null,
+      workDir: values.TELEGRAM_WORK_DIR ?? null,
+      filesBaseUrl: values.TELEGRAM_FILES_BASE_URL ?? null,
     },
     databaseUrl: readValue(env, 'DATABASE_URL'),
     auth: {
