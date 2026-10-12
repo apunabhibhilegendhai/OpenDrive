@@ -3,12 +3,14 @@ import { SignJWT } from 'jose';
 import type { FastifyInstance } from 'fastify';
 import { newId, sha256Hex } from '@opendrive/shared';
 import type { FileState, FileVisibility, ScanState } from '@opendrive/shared';
+import { MemoryStorageProvider } from '@opendrive/shared/storage/testing';
 import { loadConfig } from '../../../apps/api/src/config.js';
 import type { ApiConfig } from '../../../apps/api/src/config.js';
 import { buildServer } from '../../../apps/api/src/server.js';
 import { createServices } from '../../../apps/api/src/services.js';
 import type { AppServices } from '../../../apps/api/src/services.js';
 import type { Sql } from '../../../apps/api/src/db/client.js';
+import type { StorageResolution } from '../../../apps/api/src/storage/registry.js';
 
 /**
  * Integration harness.
@@ -73,9 +75,13 @@ export interface Harness {
 
 export async function createHarness(
   env: Record<string, string | undefined> = {},
+  options: { storage?: StorageResolution } = {},
 ): Promise<Harness> {
   const config = testConfig(env);
-  const services = createServices(config);
+  const services = createServices(
+    config,
+    options.storage === undefined ? {} : { storage: options.storage },
+  );
   const server = await buildServer({ config, services, logger: false });
   const sql = services.db.requireSql();
   return {
@@ -87,6 +93,22 @@ export async function createHarness(
       await server.close();
       await services.db.close();
     },
+  };
+}
+
+/**
+ * A storage resolution backed by the shared in-memory test double.
+ *
+ * The upload engine's bookkeeping is what these tests exercise; the provider contract suite already
+ * proves the double behaves like a provider. Injecting it lets an upload run end to end without a
+ * network backend, while the file rows, quota holds and ownership checks remain entirely real.
+ */
+export function memoryStorage(): StorageResolution {
+  return {
+    provider: new MemoryStorageProvider(),
+    configuredName: 'memory-test',
+    detail: 'In-memory storage injected by the integration tests.',
+    productionSafe: false,
   };
 }
 
