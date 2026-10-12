@@ -154,6 +154,15 @@ curl -fsS https://api.opendrive.indevs.in/openapi.json >/dev/null && echo docs o
   otherwise; `/readyz` names which store is in use. Counter sharing is what makes the limits hold
   for the principal even if traffic lands on a different process.
 
+**Verifying the ceilings.** Send a _concurrent_ burst, not a sequential loop: every request crosses
+the Access tunnels to reach Postgres and Redis, so a sequential client only manages roughly 40
+requests a minute — comfortably under a 120/minute ceiling and, on its own, proof of nothing. A
+burst of 200 concurrent requests from one principal should show about `RATE_LIMIT_REQUESTS_PER_MINUTE`
+answers of `200` and the remainder `429`, with a second, fresh principal still answered `200`.
+Expect each request to pay one extra tunnel round trip for the Redis counter; that cost is the price
+of shared limits here, and it is why the limiter fails _open_ rather than stalling if the tunnel
+drops (D37).
+
 ## Why this is separate from CI
 
 `ci.yml` must stay reproducible for anyone who clones the repository, so it uses throwaway service

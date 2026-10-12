@@ -720,7 +720,9 @@ happened to serve the request.
 **Honest limits:** the limiter is registered with `skipOnError`, so an unreachable Redis fails
 _open_ — the limiter skips instead of turning a cache outage into an API outage. Redis and Postgres
 share the same backend host, so "Redis down, Postgres up" is the narrow window in which limits
-silently disappear; `/readyz` reports `redis: unavailable` throughout it. Upload sessions stay
+silently disappear; `/readyz` reports `redis: unavailable` throughout it. Redis also sits behind the
+same Access tunnel as the database, so every request pays one more tunnel round trip for its counter
+— which is why only a _concurrent_ burst can trip the ceiling. Upload sessions stay
 in-process, so a second instance is still unsupported: Redis makes the limiter cluster-wide, not
 the upload engine, and the `concurrency` group is what keeps the deployment single-instance.
 
