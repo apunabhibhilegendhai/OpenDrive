@@ -1,0 +1,164 @@
+# Host the OpenDrive API on a GitHub Actions runner, published over HTTPS by a Cloudflare Tunnel.
+#
+# This is a deliberate, operator-triggered action — never something a push starts, and never part
+# of CI. CI (`ci.yml`) stays secret-free and bounded; this workflow is the opposite: it needs
+# credentials and it holds a runner for hours. Keeping the two separate is the whole point.
+#
+# Read docs/DEPLOYMENT.md before using it. Two things must be true first:
+#   1. A reachable metadata database. The API opens a direct `postgres://` connection, so
+#      `DATABASE_URL` must point at a server this runner can actually reach — not the
+#      tunnel-only Supabase hostname, which exposes HTTPS but not PostgreSQL.
+#   2. A Cloudflare Tunnel whose public hostname ingress maps to `http://localhost:3000`.
+#
+# Hosting a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict;
+# treat a run here as a development deployment, not a home for real user data.
+name: API host (Cloudflare Tunnel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'How long to keep the API and tunnel up (5–330).'
+        required: false
+        default: '300'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-host
+  cancel-in-progress: false
+
+jobs:
+  host:
+    name: Run the API behind a Cloudflare Tunnel
+    runs-on: ubuntu-latest
+    # The runner ceiling is 6h; stay inside it and let the in-step timer end the run cleanly.
+    timeout-minutes: 350
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm (version comes from package.json packageManager)
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The API is consumed through `@opendrive/shared`'s built declarations, so the library is
+      # compiled first. Only the two packages this deployment runs are built.
+      - name: Build the shared library and the API
+        run: |
+          pnpm build:libs
+          pnpm --filter @opendrive/api build
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL -o cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared --version
+
+      - name: Serve the API through the tunnel
+        env:
+          NODE_ENV: production
+          API_HOST: 127.0.0.1
+          API_PORT: '3000'
+          LOG_LEVEL: info
+          DOCS_ENABLED: 'true'
+          # The tunnel terminates TLS; the app must trust the forwarded headers to see the caller.
+          TRUST_PROXY: 'true'
+
+          # --- Configuration that is not a secret (repository Variables) ---
+          CORS_ORIGINS: ${{ vars.CORS_ORIGINS }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          STORAGE_PROVIDER: ${{ vars.STORAGE_PROVIDER || 'telegram-experimental' }}
+          STORAGE_MAX_FILE_SIZE_BYTES: ${{ vars.STORAGE_MAX_FILE_SIZE_BYTES }}
+          STORAGE_CHUNK_SIZE_BYTES: ${{ vars.STORAGE_CHUNK_SIZE_BYTES }}
+          TELEGRAM_API_BASE_URL: ${{ vars.TELEGRAM_API_BASE_URL }}
+          TELEGRAM_MAX_PART_SIZE_BYTES: ${{ vars.TELEGRAM_MAX_PART_SIZE_BYTES }}
+          MALWARE_SCAN_ENABLED: ${{ vars.MALWARE_SCAN_ENABLED || 'false' }}
+          RATE_LIMIT_ENABLED: 'true'
+          RATE_LIMIT_REQUESTS_PER_MINUTE: ${{ vars.RATE_LIMIT_REQUESTS_PER_MINUTE || '120' }}
+          RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE: ${{ vars.RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE || '600' }}
+          UPLOAD_SESSION_TTL_HOURS: ${{ vars.UPLOAD_SESSION_TTL_HOURS || '24' }}
+          UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL: ${{ vars.UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL || '3' }}
+          SUPABASE_JWT_AUDIENCE: ${{ vars.SUPABASE_JWT_AUDIENCE || 'authenticated' }}
+
+          # --- Secrets (repository Secrets; never printed) ---
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          SUPABASE_JWKS_URL: ${{ secrets.SUPABASE_JWKS_URL }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          SUPABASE_JWT_ISSUER: ${{ secrets.SUPABASE_JWT_ISSUER }}
+          IP_HASH_SECRET: ${{ secrets.IP_HASH_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_STORAGE_CHAT_ID: ${{ secrets.TELEGRAM_STORAGE_CHAT_ID }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+
+          DURATION_MINUTES: ${{ inputs.duration_minutes }}
+        run: |
+          set -euo pipefail
+
+          # Fail before starting anything when the two values without which hosting is meaningless
+          # are absent. Coming up "healthy" while refusing every request would be worse than not
+          # coming up at all.
+          : "${DATABASE_URL:?set the DATABASE_URL secret (must be reachable from the runner)}"
+          : "${CLOUDFLARE_TUNNEL_TOKEN:?set the CLOUDFLARE_TUNNEL_TOKEN secret}"
+
+          node apps/api/dist/index.js > api.log 2>&1 &
+          api_pid=$!
+
+          cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TUNNEL_TOKEN" > tunnel.log 2>&1 &
+          tunnel_pid=$!
+
+          cleanup() {
+            kill "$api_pid" "$tunnel_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          echo "Waiting for the API to report ready on 127.0.0.1:3000 ..."
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/readyz >/dev/null 2>&1; then
+              echo "API ready after ${attempt}s."
+              ready=true
+              break
+            fi
+            if ! kill -0 "$api_pid" 2>/dev/null; then
+              echo "The API exited during startup:"
+              cat api.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" != true ]; then
+            echo "The API did not become ready within 30s:"
+            cat api.log
+            exit 1
+          fi
+
+          minutes="${DURATION_MINUTES:-300}"
+          if [ "$minutes" -lt 5 ]; then minutes=5; fi
+          if [ "$minutes" -gt 330 ]; then minutes=330; fi
+          echo "Serving for ${minutes} minutes. The public URL is the tunnel's hostname, managed in Cloudflare Zero Trust."
+          sleep $((minutes * 60))
+
+      # Always show what the processes said: a cancelled or timed-out run still leaves the reason.
+      - name: Show API and tunnel logs
+        if: always()
+        run: |
+          echo "===== api.log (tail) ====="
+          tail -n 200 api.log 2>/dev/null || echo "(no api.log)"
+          echo "===== tunnel.log (tail) ====="
+          tail -n 100 tunnel.log 2>/dev/null || echo "(no tunnel.log)"

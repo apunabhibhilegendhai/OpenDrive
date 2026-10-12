@@ -44,10 +44,20 @@ file and only the right people can read it back.
 
 1. The upload engine over one storage provider that has passed capability verification:
    `uploads.initiate`, `uploads.part`, `uploads.status`, `uploads.complete`, `uploads.abort`.
+   **Done (D32):** implemented in `apps/api/src/routes/uploads.ts` with a process-local session
+   registry, a quota hold taken before the first byte, and a non-destructive finalize.
 2. Streaming download with correct headers and per-part checksum verification, so
    "private by default" is finally provable for bytes and not only for metadata.
+   **Done:** `GET /files/:id/content` streams the stored object with bounded memory and serves only a
+   servable state (`isServable`); `tests/integration/src/uploads.test.ts` proves byte-exact reads and
+   cross-principal refusal.
 3. Deletion by owner and by anonymous deletion token (both routes exist and answer `501`).
+   **Done:** `DELETE /files/:id` deletes the stored object, marks the locator `deleted`, then
+   soft-deletes the row; the deletion token is compared against a stored digest in constant time.
 4. Redis-backed rate limiting and quota counters, so limits hold across instances.
+   **Partially done (D33):** the limiter now keys on the authenticated principal (falling back to the
+   address), part traffic has its own higher ceiling, and per-principal daily-start and open-session
+   caps exist. The counters are still in-process; moving them to Redis is the remaining work.
 5. The Telegram experiment, measured against the provider contract and either enabled with its
    measured limits or documented as rejected. Implemented and contract-verified against the test
    transport (D27); the provider now streams a single-shot whole object through a one-time disk
@@ -73,6 +83,13 @@ Malware scanning gate, abuse reporting and triage workflow, takedown actions wit
 ## Phase 5 — deployment
 
 TLS termination, backups with a **passing restore drill**, monitoring and alerting on readiness, a static-host decision for the web app, and a documented incident runbook.
+
+A **development** deployment exists ahead of this phase: `.github/workflows/api-host.yml` runs the API
+for a bounded session on a GitHub Actions runner and publishes it over HTTPS through a Cloudflare
+Tunnel, triggered only by an operator. It is explicitly not production — the runner is reclaimed and
+the backend is ephemeral (D26, D34) — and the operator steps are in
+[docs/DEPLOYMENT.md](DEPLOYMENT.md). TLS termination beyond the tunnel, backups/restore drills,
+alerting and an incident runbook remain Phase 5 work.
 
 ## Phase 6 — monetization (not before)
 
@@ -115,12 +132,12 @@ evidence exists.
 
 ### Application behaviour
 
-- [~] **Private by default proven by test.** Metadata half done: `tests/integration/src/ownership.test.ts` shows another principal's file is invisible and refused, and that ownership comes from the database rather than the request. The byte half is blocked on the download route, which still answers `501`; the test must be extended when it moves.
+- [x] **Private by default proven by test.** Both halves are now covered: `tests/integration/src/ownership.test.ts` shows another principal's metadata is invisible and refused, and `tests/integration/src/uploads.test.ts` proves the byte half — a file's content is byte-exact for its owner and a 404 for everyone else.
 - [x] **Share-token properties proven by test.** `tests/integration/src/shares.test.ts`: expiry and revocation take effect on the next resolution, refusals are indistinguishable from a token that never existed, the plaintext token appears in no column of the row, and only its digest is stored.
-- [ ] **Anonymous deletion proven by test.** Blocked on `files.delete` and `anonymous_sessions` deletion, which are not implemented (both answer `501`).
+- [x] **Anonymous deletion proven by test.** `tests/integration/src/uploads.test.ts`: an anonymous uploader deletes with the token issued at upload time, a wrong token is a 404, and no credential at all is a 401.
 - [ ] **No whole-file buffering.** Evidence: a 2 GiB (or the measured maximum) upload completes with the API process's resident memory staying within a small, recorded bound. The multipart path streams each part with no staging; the single-shot path spools once to local disk (never RAM) and streams from there per attempt — neither holds the object in memory, but neither is measured at 2 GiB yet.
-- [ ] **Concurrent uploads from multiple principals stay bounded.** Evidence: many simultaneous uploads from distinct principals do not exhaust a single bot token's per-chat flood limits or the process's memory, and per-principal upload throttling holds across instances. Known gaps today: the Telegram provider keeps upload state in process memory (`resumableUpload: false`), the global limiter is 120 req/min while one 2 GiB multipart upload alone issues hundreds of part requests, and there is no per-principal upload limit. See `docs/DECISIONS.md` D31.
-- [ ] **Rate limits actually shared.** Evidence: two API instances behind the same Redis reject beyond the configured limit, demonstrated with a request count above the limit.
+- [~] **Concurrent uploads from multiple principals stay bounded.** Per-principal upload throttling now exists: the limiter keys on the principal, part traffic has its own ceiling, and the engine caps open sessions and daily upload starts per principal (D33). Still open: the Telegram provider keeps upload state in process memory (`resumableUpload: false`), and the counters are per instance rather than shared. See `docs/DECISIONS.md` D31, D33.
+- [ ] **Rate limits actually shared.** Evidence: two API instances behind the same Redis reject beyond the configured limit, demonstrated with a request count above the limit. (The Redis container is already provisioned in CI for this; the counters are still in-process — D33.)
 - [ ] **Backup drill passed.** Evidence: a restore into a scratch database reproduces metadata, with the command and its output recorded in `docs/DECISIONS.md`.
 
 ### Tooling and process

@@ -561,3 +561,88 @@ whole object; part-upload retry; a size refusal that is _not_ retried; streamed 
 and checksum mismatches that send nothing; streaming multipart framing; `--local` disk read;
 file-server rewrite; and the missing-work-dir refusal) and `apps/api/src/config.test.ts` (the two
 new environment variables).
+
+## D32. The upload workflow is a real engine, and a failed finalize does not destroy a recoverable upload
+
+**Chosen:** `apps/api/src/routes/uploads.ts` implements the full workflow the contract publishes —
+`POST /uploads` (declare, then reserve a quota hold **before any byte moves**), `PUT
+/uploads/:id/parts/:n` (raw `application/octet-stream`, bounded by the chunk size the initiate
+response advertised), `GET /uploads/:id` (progress), `POST /uploads/:id/complete` (verify, persist the
+locator, commit the hold, transition to `ready`/`scanning`), and `DELETE /uploads/:id` (abort). A
+process-local `UploadSessionStore` owns the session record and the per-principal open-session cap;
+the locator is written to `storage_objects` by a new repository. A `complete` that fails — missing
+parts, a checksum mismatch — is deliberately **not** terminal: the provider keeps the staged parts,
+so the client may send what is missing and retry, or abort to release the hold. Only an explicit
+abort ends a session, and `insertActiveStorageObject` is idempotent so a retried complete cannot
+double-record an object.
+
+**Why:** the provider contract (D27, D30) already stages parts and is idempotent; the value the route
+adds is the *bookkeeping* around it, and two of those rules are load-bearing. First, reserving before
+the first byte is what stops a caller from filling the disk and then discovering they are over quota
+(D23). Second, treating a premature `complete` as a permanent failure would turn a transient client
+mistake into a lost upload: the bytes are already staged and a single missing part is trivially
+recoverable, so the engine must let the caller recover rather than punish them. A hold left behind by
+a crashed client is not a leak — it expires on its own and the worker sweeps it.
+
+**Honest limits (unchanged):** the API-side session record is process-local, so `resumableUpload`
+stays `false` (the schema reserves `upload_sessions` for when a provider can resume). Deletion marks
+the local object `deleted` and soft-deletes the row; it is as final as the backend's `deleteIsFinal`
+(D29).
+
+**Guarded by:** `apps/api/src/storage/upload-sessions.test.ts` (ownership, the open-session cap,
+expiry, part accounting) and `tests/integration/src/uploads.test.ts` (single- and multi-part
+round-trips with byte-exact download, out-of-order parts, resume-after-failed-complete, abort
+releasing the hold, owner and deletion-token deletion, and the size/part-size/concurrency refusals).
+
+## D33. Rate limiting keys on the principal, and part traffic gets its own ceiling
+
+**Chosen:** `@fastify/rate-limit` is registered *after* identity resolution, with a `keyGenerator`
+that returns the authenticated principal (`user:<id>` or `session:<id>`) and falls back to the
+request address only when no credential was proven. The part route additionally carries its own,
+higher ceiling (`RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`, default 600/min) via the route's
+`config.rateLimit`. Two further bounds live in the engine rather than the limiter: a per-principal
+daily cap on uploads *started* (`ANONYMOUS_UPLOADS_PER_DAY` / `REGISTERED_UPLOADS_PER_DAY`) and a cap
+on open sessions at once (`UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL`).
+
+**Why:** an address-keyed limiter punishes everyone behind a shared NAT and cannot stop one
+authenticated account from saturating the API — the two failure modes that matter for a multi-user
+service. Keying on the principal fixes both. But one rule cannot fit both shapes of traffic: a
+single legitimate upload issues one request per part, so the ordinary 120/min ceiling would throttle
+a perfectly normal 2 GiB upload, while a per-part ceiling of 600/min would be far too loose for
+metadata routes. Splitting the ceiling by route keeps each honest. The daily-start and open-session
+caps bound *abuse* — how often work may begin and how much may be in flight — separately from the
+storage quota, which bounds *bytes*.
+
+**Honest limits:** the limiter and the session registry are in-process, so their counters are per
+instance. A multi-instance deployment would need the shared Redis the stack already provisions; that
+is recorded in `docs/ROADMAP.md`, and the CI `database` job already provides a Redis container for
+it.
+
+**Guarded by:** `apps/api/src/server.test.ts` (the limiter still answering 429 with the principal
+keying in place) and `tests/integration/src/uploads.test.ts` (the open-session cap).
+
+## D34. The API is hosted on GitHub Actions behind a Cloudflare Tunnel, as an operator-triggered action
+
+**Chosen:** `.github/workflows/api-host.yml` builds the API and runs it for a bounded session
+(5–330 minutes) on a GitHub Actions runner, publishing it over HTTPS through a Cloudflare Tunnel
+whose token is a repository secret. It runs only on `workflow_dispatch` — never on `push` and never
+on a schedule — and it refuses to start unless `DATABASE_URL` and `CLOUDFLARE_TUNNEL_TOKEN` are set.
+The operator steps, required secrets and the one hard prerequisite (a `DATABASE_URL` the runner can
+actually reach) are in `docs/DEPLOYMENT.md`. `ci.yml` is untouched and keeps its no-secrets,
+read-only contract.
+
+**Why:** the cost target stays zero and the decision to use this shape was already made for the
+metadata backend (D26); hosting the API the same way is the consistent choice, and it is what turns
+a working upload engine into something reachable from anywhere. The separation from CI is the point:
+CI must stay reproducible for anyone who clones the repo, while a hosted deployment needs
+credentials and holds a runner for hours. Making it operator-triggered means hosting is always a
+deliberate act, which also respects the Acceptable Use Policy constraint D26 already records.
+
+**Honest limits:** the session is ephemeral (the runner is reclaimed, and the deployment inherits
+D26's data-loss caveat); the tunnel's public hostname is managed in Cloudflare Zero Trust, not in
+this repository; and because only HTTPS is exposed by the tunnel, the API needs a *separately
+reachable* PostgreSQL, not the tunnel-only Supabase hostname. All three are documented rather than
+papered over.
+
+**Revisit when:** the service must be continuously available or hold real user data, at which point
+this becomes a development convenience and the API moves to a persistent host.
