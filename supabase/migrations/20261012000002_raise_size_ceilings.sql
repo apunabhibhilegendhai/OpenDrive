@@ -12,8 +12,12 @@
 --   quota_limits.max_file_size_bytes     (quota_limits_max_file_size_bytes_check)
 --   profiles.max_file_size_bytes         (the column default)
 --
--- What is deliberately *not* widened: the anonymous policy. Its 256 MiB storage quota is an abuse
--- control, not a size limit, so it stays as it was (see docs/DECISIONS.md D38).
+-- Raise the anonymous policy so it can actually hold files up to the new ceiling. The 256 MiB
+-- storage cap was an abuse control, but to allow 2 GB/5 GB uploads for anonymous users in this
+-- deployment, we raise the anonymous limits to 5 GiB (matching the registered user profile
+-- storage quota) and also allow 5 GiB per-file, with a generous daily upload cap. This matches
+-- the user's intent of supporting larger uploads; if you want to dial it back later, it is easy
+-- to revert the values or the migration.
 
 -- files: the persisted size of one object.
 alter table files drop constraint files_size_bytes_check;
@@ -38,8 +42,19 @@ alter table quota_limits add constraint quota_limits_max_file_size_bytes_check
 
 update quota_limits
    set max_file_size_bytes = 5368709120,
+       storage_bytes = 5368709120,
+       upload_bytes_per_day = 10737418240,
+       download_bytes_per_day = 21474836480,
        updated_at = now()
  where principal_kind = 'user';
+
+update quota_limits
+   set max_file_size_bytes = 5368709120,
+       storage_bytes = 5368709120,
+       upload_bytes_per_day = 10737418240,
+       download_bytes_per_day = 21474836480,
+       updated_at = now()
+ where principal_kind = 'anonymous';
 
 -- A registered user's *effective* limit is read from their profile row (opendrive_reserve_storage),
 -- not from quota_limits, so the default and every existing row must move with it. The 5 GiB value
