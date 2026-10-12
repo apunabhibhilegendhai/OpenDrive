@@ -521,7 +521,7 @@ select verify.eq(
      opendrive_quota_summary(null, 'sess_abcdeabcdeabcdeabcdeabcdef') ->> 'principalKind',
      opendrive_quota_summary(null, 'sess_abcdeabcdeabcdeabcdeabcdef') ->> 'storageLimitBytes',
      opendrive_quota_summary(null, 'sess_abcdeabcdeabcdeabcdeabcdef') ->> 'storageUsedBytes')),
-  'anonymous/268435456/1000'
+  'anonymous/5368709120/1000'
 );
 
 select verify.eq(
