@@ -414,7 +414,7 @@ jobs:
           echo "===== botapi.log (tail) ====="
           tail -n 50 botapi.log 2>/dev/null || echo "(no botapi.log)"
 
-      #  Chain the next session 
+      #  Chain the next session
       # The `schedule` trigger has never fired for this repo (0 event=schedule
       # runs), so nothing has restarted the API when a session ends — it has
       # been going down silently and staying down. Close the chain locally: the
