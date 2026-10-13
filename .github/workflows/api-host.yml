@@ -57,6 +57,11 @@ jobs:
       # built from. Bump deliberately (it also serves as the Actions cache key), then re-dispatch.
       BOT_API_COMMIT: e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1
 
+      # The Local Bot API server is only ever STARTED when TELEGRAM_API_BASE_URL points at
+      # loopback (see the serving step). With the public cloud API the binary is never used, so
+      # compiling TDLib for it is ~20 minutes of pure waste — gate the build on the same test.
+      NEEDS_LOCAL_BOT_API: ${{ startsWith(vars.TELEGRAM_API_BASE_URL, 'http://127.0.0.1') || startsWith(vars.TELEGRAM_API_BASE_URL, 'http://localhost') }}
+
     steps:
       - name: Check out the repository
         uses: actions/checkout@v5
@@ -94,15 +99,21 @@ jobs:
       # heavy (~20 minutes), so the install tree is cached and only the first run after a commit bump
       # pays for a build. Only the `install` tree is cached; the source and build directories live in
       # scratch space outside the cache path.
+      #
+      # Restore and save are split on purpose. `actions/cache` saves from its POST step, which only
+      # runs when the job succeeds — so a run that failed its readiness gate discarded the ~20-minute
+      # build and made every later run pay for it again. Saving in its own step, immediately after a
+      # successful build and BEFORE the serving step, means the artefact survives a failed run.
       - name: Restore the Local Bot API server build
         id: botapi-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/tg-bot-api
           key: telegram-bot-api-${{ runner.os }}-${{ env.BOT_API_COMMIT }}
 
       - name: Build the Local Bot API server
-        if: steps.botapi-cache.outputs.cache-hit != 'true'
+        id: botapi-build
+        if: env.NEEDS_LOCAL_BOT_API == 'true' && steps.botapi-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           install_prefix="$RUNNER_TEMP/tg-bot-api"
@@ -117,6 +128,13 @@ jobs:
           cmake --build "$build" --target install -j "$(nproc)"
           test -x "$install_prefix/bin/telegram-bot-api"
           ls -lh "$install_prefix/bin/telegram-bot-api"
+
+      - name: Save the Local Bot API server build
+        if: env.NEEDS_LOCAL_BOT_API == 'true' && steps.botapi-cache.outputs.cache-hit != 'true' && steps.botapi-build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/tg-bot-api
+          key: telegram-bot-api-${{ runner.os }}-${{ env.BOT_API_COMMIT }}
 
       - name: Serve the API through the tunnel
         env:
@@ -276,7 +294,14 @@ jobs:
           # unchanged. Uploaded files live on Telegram's own servers -- the server's --dir is only a
           # download cache -- so this runner's ephemeral disk is not a durability problem.
           botapi_pid=""
-          if [ -n "${TELEGRAM_API_BASE_URL:-}" ] && [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH:-}" ]; then
+          # Start it ONLY when the provider is actually routed at loopback. The cloud API URL
+          # (`https://api.telegram.org`) is also non-empty, and with it set the server was started
+          # anyway — then failed on the missing binary as soon as the build step was skipped.
+          case "${TELEGRAM_API_BASE_URL:-}" in
+            http://127.0.0.1*|http://localhost*) local_botapi=1 ;;
+            *) local_botapi=0 ;;
+          esac
+          if [ "$local_botapi" = 1 ] && [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH:-}" ]; then
             botapi_bin="$RUNNER_TEMP/tg-bot-api/bin/telegram-bot-api"
             if [ ! -x "$botapi_bin" ]; then
               echo "TELEGRAM_API_BASE_URL is set but the Local Bot API server binary is missing; rerun after the build step."
