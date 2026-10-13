@@ -1,18 +1,30 @@
-# Host the OpenDrive API on a GitHub Actions runner, published over HTTPS by a Cloudflare Tunnel.
+# The single OpenDrive workflow. It deliberately holds all three lifecycles so the repository has
+# exactly one workflow file:
 #
-# This is a deliberate, operator-triggered or scheduled action — never something a push starts, and
-# never part of CI. CI (`ci.yml`) stays secret-free and bounded; this workflow is the opposite: it
-# needs credentials and it holds a runner for hours. Keeping the two separate is the whole point.
+#   verify / database / audit  — CI. Secret-free and bounded; runs on every push to `main` and on
+#                                every pull request. Anyone who clones this repository can run it.
+#   deploy-web                 — Publishes the built web app to Vercel. Needs secrets; finishes in
+#                                seconds.
+#   host-api                   — Hosts the API behind a Cloudflare Tunnel for a bounded session.
+#                                Needs secrets and holds a runner for hours (see the caveat below).
 #
-# It also runs on a schedule so the public API stays up between manual dispatches. `concurrency`
-# (below) serialises runs: each scheduled run is queued and starts as the previous one ends rather
-# than alongside it. Overlap is not benign — upload sessions live in the process, so two instances
-# behind one tunnel would strand a multi-part upload on whichever instance did not see its start.
+# Each job is gated on the event that should run it (the `if:` on each job), so a push only runs CI
+# + the web publish, a schedule/watchman dispatch only runs the API host, and a manual dispatch
+# chooses with its `run` input. The long-running `host-api` job keeps its own `concurrency` group so
+# overlapping sessions serialise exactly as they did when this was three separate files, and
+# `permissions` is scoped per job so CI keeps its read-only `contents: read` token.
 #
-# Read docs/DEPLOYMENT.md before using it. These must be true first:
-#   1. A reachable metadata database. The API opens a direct `postgres://` connection, so
-#      `DATABASE_URL` must point at a server this runner can actually reach — not the
-#      tunnel-only Supabase hostname, which exposes HTTPS but not PostgreSQL.
+# `run-name` matters operationally: the workflow-watchman (in the Supabase-Actions repo) decides
+# whether the API is alive by reading this workflow's run history, and it only counts runs whose
+# name starts with "API host" — which is why every run that starts the host is named that way.
+#
+# Hosting a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict;
+# treat the `host-api` job as a development deployment, not a home for real user data. It is a
+# deliberate, operator-triggered or scheduled action — never something a push starts.
+#
+# Read docs/DEPLOYMENT.md before hosting. These must be true first:
+#   1. A reachable metadata database. `DATABASE_URL` must point at a server the runner can actually
+#      reach — not the tunnel-only Supabase hostname, which exposes HTTPS but not PostgreSQL.
 #   2. A Cloudflare Tunnel whose public hostname ingress maps to `http://localhost:3000`.
 #   3. (Optional) Redis, for cluster-wide rate-limit counters. When `REDIS_URL` is set the runner
 #      opens an Access-gated TCP tunnel to `redis-tcp.<domain>` on 127.0.0.1:6379.
@@ -21,30 +33,40 @@
 #      from a pinned upstream commit, starts it with `--local`, and routes the storage provider
 #      through it. Files still live on Telegram's servers (the server's `--dir` is only a download
 #      cache), so the runner's ephemeral disk is not a durability problem.
-#
-# Hosting a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict;
-# treat a run here as a development deployment, not a home for real user data.
-name: API host (Cloudflare Tunnel)
-run-name: API host${{ github.event.inputs.triggered_by == 'workflow-watchman' && ' (watchman)' || github.event.inputs.triggered_by == 'self-chain' && ' (chain)' || '' }}
+name: OpenDrive
+run-name: >-
+  ${{ github.event_name == 'schedule' && 'API host (scheduled)'
+  || (github.event_name == 'workflow_dispatch' && inputs.run == 'api') && format('API host{0}', inputs.triggered_by != '' && format(' ({0})', inputs.triggered_by) || '')
+  || (github.event_name == 'workflow_dispatch' && inputs.run == 'all') && 'API host (all)'
+  || (github.event_name == 'workflow_dispatch' && inputs.run == 'web') && 'Web deploy'
+  || 'CI' }}
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
     inputs:
+      run:
+        description: 'What to run: api (host the API), ci (verify), web (publish) or all.'
+        type: choice
+        options: [api, ci, web, all]
+        default: api
       duration_minutes:
-        description: 'How long to keep the API and tunnel up (5–330).'
+        description: 'How long to keep the API and tunnel up (5–330). Used only when the API host runs.'
         required: false
         default: '300'
-      # Source label, echoed in run-name. Declared because the workflow-watchman
-      # worker dispatches with inputs { triggered_by: 'workflow-watchman' } — an
-      # undeclared input makes GitHub reject the dispatch with HTTP 422.
+      # Source label, echoed in run-name. Declared because the workflow-watchman worker dispatches
+      # with inputs { triggered_by: 'workflow-watchman' } — an undeclared input makes GitHub reject
+      # the dispatch with HTTP 422.
       triggered_by:
         description: 'Source of the trigger (workflow-watchman auto-restart / self-chain)'
         required: false
         default: ''
   schedule:
     # Hourly, deliberately off the top of the hour (minute 17). The `schedule` event is best-effort
-    # and GitHub drops runs at `:00` under load; the old `0 */4 * * *` slot left the API down for
-    # hours whenever a slot was dropped. A run lasts five hours and `concurrency` keeps exactly one
+    # and GitHub drops runs at `:00` under load; a slot at `:00` left the API down for hours
+    # whenever it was dropped. A run lasts five hours and `concurrency` keeps exactly one
     # replacement queued, so an hourly cron means a run is (almost) always waiting to take over: a
     # dropped slot costs at most an hour, and an early failure is replaced within the hour rather
     # than waiting for the next four-hourly slot. The extra queued runs cost nothing — each is
@@ -53,27 +75,287 @@ on:
 
 permissions:
   contents: read
-  actions: write # re-dispatch the next session in the end-of-run self-chain
 
-concurrency:
-  group: api-host
-  cancel-in-progress: false
+env:
+  # Fail fast (and loudly) instead of prompting in CI.
+  CI: true
 
 jobs:
-  host:
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.run == 'ci' || inputs.run == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ci-verify-${{ github.ref }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        # The supported line (see .nvmrc and package.json engines). Add versions here when the
+        # supported range changes; keeping one entry makes failures unambiguous.
+        node: ['24']
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm (version comes from package.json packageManager)
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Report tool versions
+        run: |
+          node --version
+          pnpm --version
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      # `@opendrive/shared` is consumed through its built declarations — its package `exports` point
+      # `types` at `dist/index.d.ts`. Type-aware lint and `tsc` therefore cannot resolve it until it
+      # has been built, so the libraries are compiled before the checks. The later `Build` step still
+      # compiles every app on top of them.
+      - name: Build workspace libraries
+        run: pnpm build:libs
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      # Unit suites only: nothing here needs a service. The suites that do (schema and integration)
+      # run in the `database` job, which owns the PostgreSQL container.
+      - name: Unit tests
+        run: pnpm test
+
+      - name: End-to-end tests against the compiled API
+        run: pnpm test:e2e
+
+  database:
+    name: Database suites (PostgreSQL + Redis)
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.run == 'ci' || inputs.run == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: ci-database-${{ github.ref }}
+      cancel-in-progress: true
+    # Two suites live here, because both make claims only a database can falsify.
+    #
+    #   supabase/tests      — the schema itself: every constraint rejects what it says it does, RLS
+    #                         isolates tenants, credentials are stored as digests.
+    #   tests/integration   — the application on top of it: real repositories, real SQL and the real
+    #                         HTTP layer, proving ownership checks, credential matching and quota
+    #                         reservations actually hold.
+    #
+    # Both scripts create and drop their own scratch database on the service below and never connect
+    # to a deployed instance. Neither needs a secret: the connection is the CI-local service
+    # container, so this stays a bounded, container-local test rather than a service.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # Redis 7 mirrors the self-hosted stack (supabase-actions) so the rate limiting and job-queue
+      # suites assert against the real thing.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm (version comes from package.json packageManager)
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          # The supported line; the version matrix lives in the `verify` job.
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply the migrations and run the SQL assertion suites
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          VERIFY_DB: opendrive_verify_ci
+        run: pnpm db:verify
+
+      - name: Run the integration suite against a scratch database
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          VERIFY_DB: opendrive_verify_integration
+          REDIS_URL: redis://127.0.0.1:6379
+        run: pnpm db:test:integration
+
+  audit:
+    name: Dependency advisories (advisory, not gating)
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.run == 'ci' || inputs.run == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ci-audit-${{ github.ref }}
+      cancel-in-progress: true
+    # This step reports; it does not gate. An advisory in a transitive dependency should be visible
+    # in CI but must not block unrelated work, and it must never be silenced to make the build look
+    # green. Failures here are expected to be triaged by a human.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+
+  deploy-web:
+    name: Build and deploy the web app
+    # A push to `main` publishes; a manual dispatch publishes only when asked for `web` or `all`.
+    # Never on a pull request: the job consumes secrets and must not expose them to fork PRs.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.run == 'web' || inputs.run == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: web-host
+      cancel-in-progress: true
+    env:
+      # Non-secret project identifiers; the token is what authorizes the deploy.
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+
+    steps:
+      # The app is a static build that imports `@opendrive/shared` through a Vite alias, so the
+      # shared library is compiled first and Vercel is never asked to build the monorepo: this job
+      # produces `apps/web/dist` and uploads exactly that directory to the existing `opendrive`
+      # project. The SPA rewrite lives in `apps/web/vercel.json`, copied next to the output so a
+      # deep link resolves to `index.html` instead of a 404.
+      #
+      # Why not let Vercel build from the repository: a pnpm workspace needs every member's
+      # dependencies installed, and Vercel's install step does not carry the workspace's
+      # `packageManager`/catalog handling reliably. Building here keeps one toolchain (the same one
+      # CI uses) and hands Vercel a finished static directory.
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm (version comes from package.json packageManager)
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The web app consumes `@opendrive/shared`'s built declarations through the Vite alias, so the
+      # library must exist before the web build runs.
+      - name: Build the shared library
+        run: pnpm build:libs
+
+      - name: Build the web app
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: pnpm --filter @opendrive/web build
+
+      # Vercel reads `vercel.json` from the root of the uploaded directory, so the committed SPA
+      # rewrite has to sit beside `index.html`.
+      - name: Attach the SPA rewrite to the build output
+        run: cp apps/web/vercel.json apps/web/dist/vercel.json
+
+      - name: Deploy to Vercel (production)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx --yes vercel@latest deploy apps/web/dist --prod --yes --token "$VERCEL_TOKEN"
+
+  host-api:
     name: Run the API behind a Cloudflare Tunnel
+    # Scheduled sessions and dispatches (the watchman's auto-restart and the end-of-run self-chain
+    # both dispatch with `run` defaulting to `api`) start the host. A push or pull request never does.
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.run == 'api' || inputs.run == 'all'))
     runs-on: ubuntu-latest
     # The runner ceiling is 6h; stay inside it and let the in-step timer end the run cleanly.
     timeout-minutes: 350
+    # Upload sessions live in the process, so two instances behind one tunnel would strand a
+    # multi-part upload on whichever instance did not see its start. `cancel-in-progress: false`
+    # keeps exactly one session running and queues replacements behind it.
+    concurrency:
+      group: api-host
+      cancel-in-progress: false
+    # Overrides the workflow-level `contents: read` (job permissions replace, not merge).
+    permissions:
+      contents: read
+      actions: write # re-dispatch the next session in the end-of-run self-chain
 
     env:
-      # Upstream commit of tdlib/telegram-bot-api that the self-hosted Local Bot API server is
-      # built from. Bump deliberately (it also serves as the Actions cache key), then re-dispatch.
+      # Upstream commit of tdlib/telegram-bot-api that the self-hosted Local Bot API server is built
+      # from. Bump deliberately (it also serves as the Actions cache key), then re-dispatch.
       BOT_API_COMMIT: e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1
 
-      # The Local Bot API server is only ever STARTED when TELEGRAM_API_BASE_URL points at
-      # loopback (see the serving step). With the public cloud API the binary is never used, so
-      # compiling TDLib for it is ~20 minutes of pure waste — gate the build on the same test.
+      # The Local Bot API server is only ever STARTED when TELEGRAM_API_BASE_URL points at loopback
+      # (see the serving step). With the public cloud API the binary is never used, so compiling
+      # TDLib for it is ~20 minutes of pure waste — gate the build on the same test.
       NEEDS_LOCAL_BOT_API: ${{ startsWith(vars.TELEGRAM_API_BASE_URL, 'http://127.0.0.1') || startsWith(vars.TELEGRAM_API_BASE_URL, 'http://localhost') }}
 
     steps:
@@ -108,19 +390,12 @@ jobs:
           sudo dpkg -i cloudflared.deb
           cloudflared --version
 
-      # The storage provider can talk to a self-hosted Local Bot API server so a single part can be
-      # far larger than the public API's 20 MiB download limit. Building it compiles TDLib, which is
-      # heavy (~20 minutes), so the install tree is cached and only the first run after a commit bump
-      # pays for a build. Only the `install` tree is cached; the source and build directories live in
-      # scratch space outside the cache path.
-      #
       # Restore and save are split on purpose. `actions/cache` saves from its POST step, which only
-      # runs when the job succeeds — so a run that failed its readiness gate discarded the ~20-minute
-      # build and made every later run pay for it again. Saving in its own step, immediately after a
-      # successful build and BEFORE the serving step, means the artefact survives a failed run.
-      # Gated on the same condition as the build: when TELEGRAM_API_BASE_URL points at the
-      # public API there is nothing to build, nothing to save, and nothing to restore — an
-      # ungated restore just logs a confusing "Cache not found" for a key that can never exist.
+      # runs when the job succeeds — so a run that failed its readiness gate discarded the
+      # ~20-minute build and made every later run pay for it again. Saving in its own step,
+      # immediately after a successful build and BEFORE the serving step, means the artefact
+      # survives a failed run. Gated on the same condition as the build: when
+      # TELEGRAM_API_BASE_URL points at the public API there is nothing to build, save or restore.
       - name: Restore the Local Bot API server build
         id: botapi-cache
         if: env.NEEDS_LOCAL_BOT_API == 'true'
@@ -212,11 +487,10 @@ jobs:
           : "${DATABASE_URL:?set the DATABASE_URL secret (must be reachable from the runner)}"
           : "${CLOUDFLARE_TUNNEL_TOKEN:?set the CLOUDFLARE_TUNNEL_TOKEN secret}"
 
-          # The metadata database is never exposed publicly. When a Zero Trust service
-          # token is configured, open a loopback port through the Access-gated
-          # `db.<domain>` tunnel and let DATABASE_URL point at 127.0.0.1:5432. Without a
-          # token the tunnel stays closed and DATABASE_URL must already resolve (e.g. a
-          # directly reachable Postgres on the runner's own network).
+          # The metadata database is never exposed publicly. When a Zero Trust service token is
+          # configured, open a loopback port through the Access-gated `db.<domain>` tunnel and let
+          # DATABASE_URL point at 127.0.0.1:5432. Without a token the tunnel stays closed and
+          # DATABASE_URL must already resolve (e.g. a directly reachable Postgres).
           db_tunnel_pid=""
           if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
             echo "Opening the Access-gated database tunnel (${DATABASE_TUNNEL_HOSTNAME}) on 127.0.0.1:5432 ..."
@@ -274,8 +548,8 @@ jobs:
 
           # Prove the tunnel carries a real Postgres session before the API starts, so a broken
           # tunnel is reported as such instead of surfacing as an unexplained /readyz 503. The
-          # backend Supabase session is itself restarted on a schedule, so a scheduled run can
-          # begin during a brief outage: retry for a few minutes before giving up.
+          # backend Supabase session is itself restarted on a schedule, so a scheduled run can begin
+          # during a brief outage: retry for a few minutes before giving up.
           if [ -n "$db_tunnel_pid" ]; then
             db_ok=false
             for attempt in $(seq 1 60); do
@@ -313,9 +587,9 @@ jobs:
           # unchanged. Uploaded files live on Telegram's own servers -- the server's --dir is only a
           # download cache -- so this runner's ephemeral disk is not a durability problem.
           botapi_pid=""
-          # Start it ONLY when the provider is actually routed at loopback. The cloud API URL
-          # (`https://api.telegram.org`) is also non-empty, and with it set the server was started
-          # anyway — then failed on the missing binary as soon as the build step was skipped.
+          # The cloud API URL (`https://api.telegram.org`) is also non-empty; start the server ONLY
+          # when the provider is actually routed at loopback, or a skipped build leaves the binary
+          # missing and the step fails on that instead.
           case "${TELEGRAM_API_BASE_URL:-}" in
             http://127.0.0.1*|http://localhost*) local_botapi=1 ;;
             *) local_botapi=0 ;;
@@ -422,19 +696,16 @@ jobs:
           echo "===== botapi.log (tail) ====="
           tail -n 50 botapi.log 2>/dev/null || echo "(no botapi.log)"
 
-      #  Chain the next session
-      # The `schedule` trigger has never fired for this repo (0 event=schedule
-      # runs), so nothing has restarted the API when a session ends — it has
-      # been going down silently and staying down. Close the chain locally: the
-      # run re-dispatches itself as its last act. `workflow_dispatch` is the
-      # documented exception to the "GITHUB_TOKEN-triggered events do not create
-      # runs" rule, and this job now declares `actions: write` for it.
+      # The `schedule` trigger has never fired for this repo reliably, so nothing else was
+      # restarting the API when a session ended — it went down silently and stayed down. Close the
+      # chain locally: the run re-dispatches itself as its last act. `workflow_dispatch` is the
+      # documented exception to the "GITHUB_TOKEN-triggered events do not create runs" rule, and
+      # this job declares `actions: write` for it.
       #
-      # Only a *successful* serve chains. The serve step fails only in the
-      # up-front pre-flight (an unreachable DATABASE_URL / bad tunnel), and a
-      # failure there must NOT relaunch — that would be a ~5-minute crash loop.
-      # A cancelled run is left alone too (that is how an operator stops it).
-      # The hourly schedule stays as the backstop for those cases.
+      # Only a *successful* serve chains. The serve step fails only in the up-front pre-flight (an
+      # unreachable DATABASE_URL / bad tunnel), and a failure there must NOT relaunch — that would be
+      # a ~5-minute crash loop. A cancelled run is left alone too (that is how an operator stops it).
+      # The hourly schedule and the workflow-watchman remain as the backstop for those cases.
       - name: Chain the next session
         if: ${{ always() && !cancelled() && steps.serve.outcome == 'success' }}
         env:
@@ -446,7 +717,7 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/api-host.yml/dispatches" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/opendrive.yml/dispatches" \
             -d '{"ref":"main","inputs":{"triggered_by":"self-chain"}}')
           echo "  dispatch HTTP ${CODE}"
           if [ "$CODE" != "204" ]; then
