@@ -1,0 +1,468 @@
+/*
+ * Drawn things: the chart layer, the compass rose, wave bands, the log-pose dial, printed-plate
+ * frames and the treasure chart.
+ *
+ * Every colour in here resolves through a token, so both themes are one attribute away and the
+ * contrast test in tokens.test.ts covers these surfaces too. Nothing here is load-bearing for
+ * meaning: each ornament sits beside text that says the same thing in words.
+ */
+
+/* Chart layer -------------------------------------------------------------- */
+
+.chartlayer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  color: var(--chartline);
+  opacity: var(--chartlayer-opacity);
+}
+
+.chartlayer__grid {
+  opacity: 0.55;
+}
+
+.chartlayer__contours,
+.chartlayer__rhumb {
+  opacity: 0.85;
+}
+
+.chartlayer__sounds {
+  opacity: 0.7;
+  letter-spacing: 0.06em;
+}
+
+/* Compass rose ------------------------------------------------------------- */
+
+.rose {
+  shape-rendering: geometricPrecision;
+  overflow: visible;
+}
+
+.rose__needle {
+  fill: var(--primary);
+  stroke: currentColor;
+  stroke-width: 1.3;
+}
+
+.rose--mark {
+  flex: 0 0 auto;
+}
+
+.rose--hero {
+  color: var(--ink);
+  filter: drop-shadow(4px 4px 0 var(--rule-soft));
+}
+
+.rose--watermark {
+  position: absolute;
+  right: -18px;
+  top: -26px;
+  color: var(--ink);
+  opacity: 0.07;
+  pointer-events: none;
+}
+
+.rose__letters {
+  letter-spacing: 0.04em;
+}
+
+/* Wave bands --------------------------------------------------------------- */
+
+.waves {
+  display: block;
+  width: 100%;
+  color: var(--ink-soft);
+}
+
+.waves__crest {
+  stroke: currentColor;
+  opacity: 0.75;
+}
+
+.waves__mid {
+  stroke: currentColor;
+  opacity: 0.45;
+}
+
+.waves__foam {
+  stroke: var(--primary);
+  opacity: 0.5;
+  stroke-linecap: round;
+}
+
+.wave-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--muted);
+}
+
+.wave-divider > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wave-divider__label {
+  flex: 0 0 auto;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-stretch: condensed;
+  letter-spacing: var(--tracking-stamp);
+  text-transform: uppercase;
+}
+
+/* Log-pose dial ------------------------------------------------------------ */
+
+.dial {
+  display: inline-block;
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+}
+
+.dial__arc {
+  stroke: var(--teal);
+  transition: stroke-dasharray var(--motion-slow) var(--ease-out);
+}
+
+.dial__needle {
+  fill: var(--primary);
+  stroke: var(--ink);
+  stroke-width: 1.1;
+  transition: transform var(--motion-slow) var(--ease-out);
+}
+
+.dial__value {
+  font-weight: 600;
+}
+
+.dial--ready {
+  color: var(--ok);
+}
+
+.dial--ready .dial__arc {
+  stroke: var(--ok);
+}
+
+.dial--failed .dial__arc,
+.dial--aborted .dial__arc {
+  stroke: var(--danger);
+}
+
+.dial--failed .dial__needle,
+.dial--aborted .dial__needle {
+  fill: var(--danger);
+}
+
+/* Printed plate ------------------------------------------------------------ */
+
+.plate {
+  position: relative;
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border: var(--border-rule) solid var(--rule);
+  background: var(--surface);
+  box-shadow: var(--shadow-plate);
+}
+
+.plate__marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--rule);
+}
+
+.plate__mark {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+}
+
+.plate__mark--tl {
+  top: 3px;
+  left: 3px;
+}
+
+.plate__mark--tr {
+  top: 3px;
+  right: 3px;
+  transform: scaleX(-1);
+}
+
+.plate__mark--bl {
+  bottom: 3px;
+  left: 3px;
+  transform: scaleY(-1);
+}
+
+.plate__mark--br {
+  bottom: 3px;
+  right: 3px;
+  transform: scale(-1);
+}
+
+.plate__stamp {
+  position: absolute;
+  top: calc(-1 * var(--space-2));
+  right: var(--space-3);
+  padding: 1px var(--space-2);
+  border: var(--border-hairline) solid currentColor;
+  background: var(--paper-deep);
+  font-family: var(--font-display);
+  font-stretch: condensed;
+  font-size: var(--text-stamp);
+  font-weight: 600;
+  letter-spacing: var(--tracking-stamp);
+  text-transform: uppercase;
+  transform: rotate(-1.6deg);
+}
+
+.plate--accent {
+  border-color: var(--primary);
+}
+
+.plate--accent .plate__stamp {
+  color: var(--primary);
+}
+
+.plate--ok .plate__stamp {
+  color: var(--ok);
+}
+
+.plate--warn .plate__stamp {
+  color: var(--warn);
+}
+
+.plate--danger .plate__stamp {
+  color: var(--danger);
+}
+
+.plate--plain .plate__stamp {
+  color: var(--muted);
+}
+
+/* Treasure chart ----------------------------------------------------------- */
+
+.seachart {
+  display: block;
+  width: min(360px, 100%);
+  height: auto;
+  color: var(--ink-soft);
+}
+
+.seachart__rule,
+.seachart__compass,
+.seachart__reef {
+  opacity: 0.6;
+}
+
+.seachart__land {
+  opacity: 0.9;
+}
+
+.seachart__route {
+  stroke: var(--muted);
+  opacity: 0.8;
+}
+
+.seachart__route-live {
+  stroke: var(--primary);
+  opacity: 1;
+}
+
+.seachart__mark {
+  color: var(--primary);
+}
+
+.seachart__compass-needle {
+  fill: var(--gold);
+  stroke: var(--ink-soft);
+}
+
+.seachart__sounds {
+  opacity: 0.65;
+}
+
+/* Chrome details ----------------------------------------------------------- */
+
+.rail__edge {
+  margin-top: calc(-1 * var(--space-4));
+  color: var(--rule-soft);
+}
+
+.topbar {
+  background-image: var(--texture-graticule);
+}
+
+.pagehead {
+  position: relative;
+  overflow: visible;
+}
+
+.pagehead__serial {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pagehead__serial::after {
+  content: '';
+  width: 46px;
+  border-top: var(--border-rule) solid var(--primary);
+}
+
+.pagehead__title {
+  position: relative;
+  padding-right: var(--space-6);
+}
+
+.deckrule {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  height: 10px;
+}
+
+.deckrule__bar {
+  flex: 1 1 auto;
+  height: 4px;
+  background: var(--rule);
+}
+
+.deckrule__bar--thin {
+  height: 1px;
+  background: var(--rule-soft);
+}
+
+/* Layering: the chart layer sits at the bottom, every readable surface above it --------- */
+
+.shell__main,
+.rail,
+.auth__card,
+.auth__hero {
+  position: relative;
+  z-index: 1;
+}
+
+.auth {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+}
+
+/* Stamped tiles: the plate draws the frame, so the tile stops drawing a second one --------- */
+
+.tile--stamp {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.tile--stamp:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+.tile--stamp .plate {
+  animation: ink-in var(--motion-draw) var(--ease-out) both;
+  animation-delay: calc(var(--ink-order, 0) * 45ms);
+}
+
+.tile--stamp:hover .plate {
+  transform: translate(-2px, -2px);
+  box-shadow: var(--shadow-brutal);
+}
+
+.tile--stamp.tile--selected .plate {
+  background: var(--paper-deep);
+  box-shadow: var(--shadow-plate);
+  border-color: var(--primary);
+}
+
+.plate__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.tile--stamp .tile__name {
+  font-family: var(--font-display);
+  font-stretch: condensed;
+  font-size: var(--text-lg);
+  letter-spacing: -0.01em;
+}
+
+/* Empty states: the chart gets room, and the wave marks the tide line ---------------------- */
+
+.state .seachart {
+  width: min(340px, 100%);
+}
+
+.state__waves {
+  max-width: 460px;
+  color: var(--ink-soft);
+}
+
+/* Tray rows: the dial leads, the name stays the loudest label ----------------------------- */
+
+.tray__identity {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.tray__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Sign-in hero ---------------------------------------------------------------------------- */
+
+.auth__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.auth__hero-waves {
+  max-width: 460px;
+}
+
+.auth__card {
+  animation: ink-in var(--motion-draw) var(--ease-out) both;
+}
+
+/* Ink motion --------------------------------------------------------------- */
+
+@keyframes ink-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scaleY(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ink-in {
+  animation: ink-in var(--motion-draw) var(--ease-out) both;
+  animation-delay: calc(var(--ink-order, 0) * 45ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ink-in {
+    animation: none;
+  }
+}

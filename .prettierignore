@@ -5,3 +5,9 @@ pnpm-lock.yaml
 *.tsbuildinfo
 .vite/
 supabase/.temp/
+
+# Planning prompt documents kept at the repository root (not source code).
+/CURRENT-STAGE.md
+/PHASE2-COMPLETION-PROMPT.md
+/PHASE3-WEB-APP-PROMPT-ONE-PIECE-BRUTALIST.md
+/PHASE3-COMPLETION-REPORT.md

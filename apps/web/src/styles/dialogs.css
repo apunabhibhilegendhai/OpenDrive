@@ -1,0 +1,307 @@
+/*
+ * Overlays: confirmation dialogs, the command palette, menus and toasts.
+ *
+ * All four share one scrim and one paper card, so a person learns the pattern once. Nothing here
+ * traps focus invisibly: dialogs move focus in, return it on close, and Escape always leaves.
+ */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: var(--scrim);
+  backdrop-filter: blur(1px);
+}
+
+.dialog,
+.palette {
+  width: min(560px, 100%);
+  max-height: 88vh;
+  overflow-y: auto;
+  border: var(--border-rule) solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-brutal);
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog--wide {
+  width: min(680px, 100%);
+}
+
+.dialog__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-rule) solid var(--rule);
+  background: var(--paper-deep);
+}
+
+.dialog__title {
+  font-size: var(--text-xl);
+  flex: 1 1 auto;
+}
+
+.dialog__body {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialog__consequence {
+  color: var(--ink-soft);
+  max-width: 68ch;
+}
+
+.dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  border-top: var(--border-hairline) solid var(--rule-soft);
+}
+
+.dialog__error,
+.auth__error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  color: var(--ink);
+  font-size: var(--text-sm);
+}
+
+/* Forms inside dialogs ----------------------------------------------------- */
+
+.shareform,
+.sharecreated,
+.keyform,
+.keycreated {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sharecreated__warn,
+.keycreated__warn {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--warn);
+  background: var(--surface-sunken);
+  font-size: var(--text-sm);
+}
+
+.radio,
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+}
+
+.keyform__scopes {
+  border: var(--border-hairline) solid var(--rule-soft);
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Command palette ---------------------------------------------------------- */
+
+.palette {
+  align-self: start;
+  margin-top: 8vh;
+  width: min(620px, 100%);
+}
+
+.palette__field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-rule) solid var(--rule);
+  background: var(--paper-deep);
+}
+
+.palette__input {
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  font-size: var(--text-lg);
+  outline: none;
+}
+
+.palette__input:focus-visible {
+  outline: none;
+}
+
+.palette__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.palette__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-hairline) solid transparent;
+  border-radius: var(--radius-control);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette__item--active {
+  border-color: var(--rule);
+  background: var(--paper-deep);
+}
+
+.palette__label {
+  font-weight: 600;
+}
+
+.palette__hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+
+.palette__empty {
+  padding: var(--space-4);
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Menus -------------------------------------------------------------------- */
+
+.menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 35;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+  border: var(--border-rule) solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-brutal-sm);
+}
+
+.menu__list--end {
+  right: 0;
+}
+
+.menu__list--start {
+  left: 0;
+}
+
+.menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-control);
+  font-size: var(--text-sm);
+}
+
+.menu__item:hover:not(:disabled),
+.menu__item:focus-visible {
+  background: var(--paper-deep);
+}
+
+.menu__item:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.menu__item--danger {
+  color: var(--danger);
+}
+
+.menu__reason {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+/* Toasts ------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: min(420px, 92vw);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-rule) solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-brutal-sm);
+  pointer-events: auto;
+  font-size: var(--text-sm);
+}
+
+.toast--success {
+  border-left-width: 6px;
+  border-left-color: var(--ok);
+}
+
+.toast--danger {
+  border-left-width: 6px;
+  border-left-color: var(--danger);
+}
+
+.toast__message {
+  flex: 1 1 auto;
+}
+
+.toast__close {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 2px;
+}

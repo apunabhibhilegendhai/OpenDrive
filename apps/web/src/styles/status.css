@@ -1,0 +1,313 @@
+/*
+ * Operational surfaces: status chips, the capacity ruler, dependency rows, quota tables and API
+ * keys. These were the whole of the old console; here they are the secondary system page.
+ *
+ * The ruler keeps its original meaning: the hatched area is the configured ceiling, the solid
+ * area is what a storage provider has actually been verified to accept.
+ */
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.chip__glyph {
+  font-size: 11px;
+  transform: translateY(-1px);
+}
+
+.chip__state {
+  font-weight: 650;
+}
+
+.chip__label {
+  color: var(--muted);
+}
+
+.chip--live .chip__glyph,
+.chip--live .chip__state {
+  color: var(--ok);
+}
+
+.chip--warn .chip__glyph,
+.chip--warn .chip__state {
+  color: var(--warn);
+}
+
+.chip--down .chip__glyph,
+.chip--down .chip__state {
+  color: var(--danger);
+}
+
+.chip--idle .chip__glyph,
+.chip--idle .chip__state {
+  color: var(--muted);
+}
+
+.ruler {
+  margin: 0;
+}
+
+.ruler__track {
+  position: relative;
+  height: 16px;
+  background: var(--surface-sunken);
+  border: var(--border-hairline) solid var(--rule);
+  overflow: hidden;
+}
+
+.ruler__unverified {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(135deg, transparent 0 6px, var(--hatch) 6px 12px);
+}
+
+.ruler__verified {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--ok);
+  transition: width var(--motion-slow) var(--ease-out);
+}
+
+.ruler__ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.ruler__caption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
+.ruler__key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ruler__key::before {
+  content: '';
+  width: 16px;
+  height: 9px;
+  border: var(--border-hairline) solid var(--rule);
+}
+
+.ruler__key--unverified::before {
+  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--hatch) 4px 8px);
+}
+
+.ruler__key--verified::before {
+  background: var(--ok);
+}
+
+.ruler__value {
+  width: 100%;
+  max-width: 82ch;
+}
+
+.statuspanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+}
+
+.statuspanel__title {
+  font-size: var(--text-lg);
+}
+
+.statuspanel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+
+.statuspanel__copy {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  max-width: 82ch;
+}
+
+.statusbanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-hairline) solid var(--danger);
+  border-left-width: 5px;
+  background: var(--surface);
+}
+
+.deps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.deps__row {
+  display: grid;
+  grid-template-columns: 190px minmax(150px, 220px) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-hairline) dotted var(--rule-soft);
+  font-size: var(--text-sm);
+}
+
+.deps__name {
+  font-weight: 600;
+}
+
+.deps__detail {
+  color: var(--muted);
+}
+
+.limits {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.limits__row {
+  display: grid;
+  grid-template-columns: minmax(140px, 190px) minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-hairline) dotted var(--rule-soft);
+}
+
+.limits__row dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.limits__row dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.gaps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.gaps li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--warn);
+  background: var(--surface-sunken);
+  font-size: var(--text-sm);
+}
+
+.keytable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.keytable th,
+.keytable td {
+  text-align: left;
+  padding: var(--space-2);
+  border-bottom: var(--border-hairline) solid var(--rule-hairline);
+}
+
+.keytable thead th {
+  font-family: var(--font-display);
+  font-stretch: condensed;
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.keytable__row--revoked {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.sharepanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+}
+
+.sharepanel__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-lg);
+}
+
+.sharepanel__row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.sharepanel__row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sharepanel__error {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--danger);
+  background: var(--surface-sunken);
+  font-size: var(--text-sm);
+}
+
+.sharepanel__result {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-top: var(--border-rule) solid var(--rule);
+}
+
+.sharepanel__result > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 170px) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-hairline) dotted var(--rule-soft);
+}
+
+.sharepanel__result dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.sharepanel__result dd {
+  margin: 0;
+}
+
+@media (max-width: 840px) {
+  .deps__row,
+  .limits__row,
+  .sharepanel__result > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+}

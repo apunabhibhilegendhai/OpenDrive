@@ -111,8 +111,9 @@ describe('quota summary', () => {
       };
     }>();
     expect(body.quota.principalKind).toBe('anonymous');
-    // The anonymous policy is stricter than a registered user's default, and it is finite.
-    expect(body.quota.limits.storageBytes).toBe(268_435_456);
+    // The anonymous policy is finite and readable; the ceiling moved with the size raise in
+    // `20261012000002_raise_size_ceilings.sql` (5 GiB, matching the registered-user quota).
+    expect(body.quota.limits.storageBytes).toBe(5_368_709_120);
     expect(body.quota.limits.maxFiles).toBe(200);
     expect(body.quota.usage.storedBytes).toBe(0);
   });

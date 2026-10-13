@@ -1,0 +1,184 @@
+/*
+ * OpenDrive design tokens — "grand-line chart table".
+ *
+ * Two deliberately different themes: Chart Paper (light) and Night Voyage (dark). The dark
+ * theme is designed on its own terms (deep ocean navy, warmer accents) rather than inverting
+ * the light one. Every colour used anywhere in the app resolves through a semantic token, so a
+ * theme change is one attribute on <html>.
+ *
+ * Typography is local-only: the platform is meant to run with no external services, so there
+ * are no web-font requests. Bahnschrift (a condensed grotesque shipped with Windows) carries
+ * headings; Segoe UI carries body text; Cascadia Mono carries ids, sizes and timestamps. Each
+ * stack degrades to a system default on other platforms rather than failing to a webfont.
+ *
+ * Contrast is enforced, not asserted: `tokens.test.ts` reads both blocks below, resolves the
+ * pairs the interface actually paints (ink, ink-soft, muted, primary, primary-ink on primary and
+ * the four tag accents, each against the paper and panel it sits on) and requires at least 4.5:1
+ * in both themes. Ratios written in a comment drift; this one is checked on every test run.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --paper: #f2ead9;
+  --paper-deep: #e6dac2;
+  --surface: #fffdf6;
+  --surface-sunken: #f7f1e4;
+
+  /* Ink */
+  --ink: #14120e;
+  --ink-soft: #4a4436;
+  --muted: #6d6553;
+
+  /* Semantic accents */
+  --primary: #c02d1b;
+  --primary-ink: #fffdf6;
+  --teal: #14505f;
+  --gold: #8a6a1d;
+  --ok: #1c6440;
+  --warn: #8a5a12;
+  --danger: #9c2115;
+
+  /* Rules and structure */
+  --rule: #14120e;
+  --rule-soft: #c9bca0;
+  --rule-hairline: #ded3ba;
+  --hatch: rgba(20, 18, 14, 0.16);
+  --dust: rgba(20, 18, 14, 0.05);
+  --scrim: rgba(20, 18, 14, 0.42);
+  /* The chart-table layer: drawn, tinted, and always faint enough to sit under long text. */
+  --chartline: rgba(20, 18, 14, 0.13);
+  --chartline-soft: rgba(20, 18, 14, 0.07);
+  --chartlayer-opacity: 0.5;
+  --wash: rgba(20, 18, 14, 0.06);
+
+  /* Brutalist depth: hard offsets, never blur. */
+  --shadow-brutal: 4px 4px 0 var(--ink);
+  --shadow-brutal-sm: 2px 2px 0 var(--ink);
+  --shadow-plate: 7px 7px 0 var(--ink);
+  --shadow-lift: -2px -2px 0 var(--ink);
+  --shadow-panel: -6px 0 0 var(--ink);
+
+  /* Geometry */
+  --radius-control: 2px;
+  --radius-panel: 3px;
+  --border-rule: 2px;
+  --border-hairline: 1px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Type */
+  --font-display: Bahnschrift, 'Arial Narrow', 'Helvetica Neue', system-ui, sans-serif;
+  --font-body: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --text-stamp: 10px;
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 21px;
+  --text-2xl: 28px;
+  --text-display: clamp(30px, 4.4vw, 46px);
+  --text-hero: clamp(38px, 6.4vw, 74px);
+  --tracking-label: 0.08em;
+  --tracking-stamp: 0.16em;
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-slow: 220ms;
+  --motion-draw: 460ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* Layout */
+  --rail-width: 236px;
+  --rail-width-collapsed: 68px;
+  --content-max: 1180px;
+  --tray-height: 148px;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --paper: #0b1620;
+  --paper-deep: #081019;
+  --surface: #122130;
+  --surface-sunken: #0e1b26;
+
+  --ink: #e9eef2;
+  --ink-soft: #b3c1cd;
+  --muted: #8fa1b0;
+
+  /* Lightened from the obvious vermilion so accent text stays above 4.5:1 on --surface. */
+  --primary: #ea6248;
+  --primary-ink: #0b1620;
+  --teal: #62b0c4;
+  --gold: #d8a94c;
+  --ok: #5fbd8b;
+  --warn: #e0a94a;
+  --danger: #ff7a68;
+
+  --rule: #e9eef2;
+  --rule-soft: #35505f;
+  --rule-hairline: #22394a;
+  --hatch: rgba(233, 238, 242, 0.18);
+  --dust: rgba(233, 238, 242, 0.06);
+  --scrim: rgba(4, 9, 14, 0.6);
+  /* Night Voyage needs a stronger line and a stronger instrument to survive the dark paper. */
+  --chartline: rgba(233, 238, 242, 0.16);
+  --chartline-soft: rgba(233, 238, 242, 0.08);
+  --chartlayer-opacity: 0.42;
+  --wash: rgba(233, 238, 242, 0.08);
+}
+
+/* Textures are drawn locally with repeating gradients — no images, no requests. */
+:root {
+  --texture-halftone: radial-gradient(var(--dust) 1.4px, transparent 1.6px);
+  --texture-halftone-size: 6px 6px;
+  --texture-contours: repeating-radial-gradient(
+    circle at 12% 8%,
+    transparent 0 26px,
+    var(--dust) 26px 27px
+  );
+  --texture-rules: repeating-linear-gradient(90deg, transparent 0 23px, var(--dust) 23px 24px);
+  --texture-graticule:
+    repeating-linear-gradient(0deg, transparent 0 39px, var(--chartline-soft) 39px 40px),
+    repeating-linear-gradient(90deg, transparent 0 39px, var(--chartline-soft) 39px 40px);
+  --texture-hatch: repeating-linear-gradient(45deg, var(--hatch) 0 2px, transparent 2px 6px);
+  --texture-deckle: repeating-linear-gradient(90deg, transparent 0 6px, var(--wash) 6px 7px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-slow: 0ms;
+    --motion-draw: 0ms;
+  }
+}
+
+/*
+ * Higher-contrast request: ink gets inkier, rules get heavier, and the decorative chart layer steps
+ * back so nothing competes with text. No colour changes are needed because the palette already
+ * passes 4.5:1 everywhere text can land (see tokens.test.ts).
+ */
+@media (prefers-contrast: more) {
+  :root {
+    --rule-soft: var(--ink);
+    --rule-hairline: var(--muted);
+    --border-rule: 3px;
+    --chartlayer-opacity: 0.12;
+  }
+
+  [data-theme='dark'] {
+    --rule-soft: var(--ink);
+    --rule-hairline: var(--ink-soft);
+  }
+}

@@ -1,0 +1,195 @@
+/*
+ * Upload tray and drop target.
+ *
+ * The tray is a strip of paper pinned to the bottom of the workspace: a ruled header, one row
+ * per file, a real progress rule, and the recovery action within reach. It never covers the
+ * file list, and it is never the only place a failure is mentioned.
+ */
+
+.tray {
+  position: sticky;
+  bottom: 0;
+  z-index: 25;
+  border-top: var(--border-rule) solid var(--rule);
+  background: var(--surface);
+  background-image: var(--texture-rules);
+  background-size: auto 100%;
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.tray__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5);
+  border-bottom: var(--border-hairline) solid var(--rule-hairline);
+  background: var(--paper-deep);
+}
+
+.tray__title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  font-family: var(--font-body);
+  font-weight: 650;
+}
+
+.tray__count {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.tray__live {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+
+.tray__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.tray__row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(220px, 2fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-5);
+  border-bottom: var(--border-hairline) solid var(--rule-hairline);
+}
+
+.tray__row--failed {
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+}
+
+.tray__row--ready {
+  background: color-mix(in srgb, var(--ok) 6%, var(--surface));
+}
+
+.tray__identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tray__name {
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tray__meta {
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.tray__progress {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+.tray__state {
+  grid-column: 2;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+
+.bar {
+  position: relative;
+  height: 12px;
+  border: var(--border-hairline) solid var(--rule);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.bar__fill {
+  display: block;
+  height: 100%;
+  background: var(--teal);
+  transition: width var(--motion-slow) var(--ease-out);
+}
+
+.bar__fill--danger {
+  background: var(--danger);
+}
+
+.tray__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-self: end;
+}
+
+.tray__warning {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  padding: var(--space-2);
+  border-left: 3px solid var(--warn);
+  background: var(--surface-sunken);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+
+.tray__warning--danger {
+  border-color: var(--danger);
+}
+
+/* Drop target -------------------------------------------------------------- */
+
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-content: center;
+  background: color-mix(in srgb, var(--ink) 46%, transparent);
+}
+
+.dropzone__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-7);
+  border: var(--border-rule) solid var(--rule);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-brutal);
+  text-align: center;
+}
+
+.dropzone__title {
+  font-family: var(--font-display);
+  font-stretch: condensed;
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+.dropzone__note {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  max-width: 46ch;
+}
+
+@media (max-width: 900px) {
+  .tray__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .tray__progress {
+    grid-column: 1 / -1;
+  }
+}

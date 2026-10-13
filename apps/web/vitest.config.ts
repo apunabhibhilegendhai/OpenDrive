@@ -8,9 +8,10 @@ export default defineConfig({
     alias: [{ find: '@opendrive/shared', replacement: sharedSrc }],
   },
   test: {
-    // Data-layer tests only: they exercise fetch handling and response validation.
-    // Rendering is verified in a real browser (docs/DEVELOPMENT.md).
+    // The data layer runs in node; component tests opt into jsdom with a
+    // `/** @vitest-environment jsdom */` docblock, so a fast suite stays fast.
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    setupFiles: ['./src/test/setup.ts'],
   },
 });

@@ -1,0 +1,350 @@
+/*
+ * The app shell: navigation rail, command bar, content column.
+ *
+ * The chart-table idea lives here rather than in the file rows: a faint contour texture on the
+ * background, a ruled rail, and one hard shadow on the tray. Text never sits on a texture.
+ */
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+}
+
+/* Rail --------------------------------------------------------------------- */
+
+.rail {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-4);
+  border-right: var(--border-rule) solid var(--rule);
+  background: var(--surface);
+}
+
+.rail__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--ink);
+}
+
+.rail__wordmark {
+  font-family: var(--font-display);
+  font-stretch: condensed;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.rail__wordmark-accent {
+  color: var(--primary);
+}
+
+.rail__nav {
+  flex: 1 1 auto;
+}
+
+.rail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rail__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-hairline) solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: var(--text-md);
+}
+
+.rail__link:hover {
+  border-color: var(--rule-soft);
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.rail__link--active {
+  border-color: var(--rule);
+  background: var(--paper-deep);
+  box-shadow: var(--shadow-brutal-sm);
+}
+
+.rail__link--active svg {
+  color: var(--primary);
+}
+
+.rail__foot {
+  border-top: var(--border-hairline) solid var(--rule-soft);
+  padding-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.rail__note {
+  font-size: var(--text-sm);
+  color: var(--muted);
+  max-width: 28ch;
+}
+
+.rail__signout {
+  justify-content: flex-start;
+}
+
+/* Command bar -------------------------------------------------------------- */
+
+.shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: var(--border-rule) solid var(--rule);
+  background: var(--paper);
+  background-image: var(--texture-halftone);
+  background-size: var(--texture-halftone-size);
+}
+
+.topbar__nav-toggle {
+  display: none;
+}
+
+.crumbs {
+  min-width: 0;
+}
+
+.crumbs__list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-sm);
+}
+
+.crumbs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.crumbs__link {
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 2px solid var(--rule-soft);
+}
+
+.crumbs__link:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.crumbs__current {
+  font-weight: 700;
+}
+
+.crumbs__sep {
+  color: var(--muted);
+}
+
+.topbar__tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Storage meter ------------------------------------------------------------ */
+
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+}
+
+.meter__track {
+  display: block;
+  width: 84px;
+  height: 10px;
+  border: var(--border-hairline) solid var(--rule);
+  background: var(--surface);
+}
+
+.meter__fill {
+  display: block;
+  height: 100%;
+  background: var(--teal);
+  transition: width var(--motion-slow) var(--ease-out);
+}
+
+.meter__fill--warn {
+  background: var(--warn);
+}
+
+.meter__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+
+/* Content ------------------------------------------------------------------ */
+
+.content {
+  flex: 1 1 auto;
+  padding: var(--space-6) var(--space-5) var(--space-8);
+}
+
+.content:focus {
+  outline: none;
+}
+
+.content__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.pagehead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.pagehead__title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.pagehead h1 {
+  margin-top: var(--space-1);
+}
+
+.pagehead__meta {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  max-width: 70ch;
+}
+
+.pagebar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: var(--border-rule) solid var(--rule);
+  background: var(--surface);
+}
+
+/* Boot / not-found --------------------------------------------------------- */
+
+.boot {
+  min-height: 60vh;
+  display: grid;
+  place-content: center;
+  gap: var(--space-2);
+  text-align: center;
+}
+
+.boot__word {
+  font-family: var(--font-display);
+  font-stretch: condensed;
+  font-size: var(--text-2xl);
+  font-weight: 600;
+}
+
+.boot__note {
+  color: var(--muted);
+}
+
+/* Responsive --------------------------------------------------------------- */
+
+@media (max-width: 1080px) {
+  .shell {
+    grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr);
+  }
+
+  .rail__label,
+  .rail__wordmark,
+  .rail__note {
+    display: none;
+  }
+
+  .rail {
+    align-items: center;
+    padding-inline: var(--space-2);
+  }
+
+  .rail__link {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(84vw, 300px);
+    transform: translateX(-102%);
+    transition: transform var(--motion-slow) var(--ease-out);
+    box-shadow: var(--shadow-panel);
+  }
+
+  .shell--nav-open .rail {
+    transform: translateX(0);
+  }
+
+  .rail__label,
+  .rail__wordmark,
+  .rail__note {
+    display: inline;
+  }
+
+  .topbar__nav-toggle {
+    display: inline-flex;
+  }
+
+  .meter--unknown,
+  .meter {
+    display: none;
+  }
+
+  .content {
+    padding: var(--space-5) var(--space-3) var(--space-7);
+  }
+}
