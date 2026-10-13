@@ -56,3 +56,57 @@ export function sanitizeMimeType(value: string | null | undefined): string | nul
 export function effectiveMimeType(declared: string, detected: string | null | undefined): string {
   return sanitizeMimeType(detected) ?? sanitizeMimeType(declared) ?? FALLBACK_MIME_TYPE;
 }
+
+/**
+ * Media types a browser may render in place (`Content-Disposition: inline`) instead of downloading.
+ *
+ * A positive allow-list, not an `image/*` wildcard: `image/svg+xml` is an image type *and* an
+ * active document that can carry script, so it must keep downloading — as must HTML, PDF and
+ * anything else whose bytes might execute or are simply not renderable. The choice lives here
+ * rather than in the route so the "safe to show inline" decision is testable on its own, next to
+ * the sanitising it depends on (docs/SECURITY.md §6).
+ */
+const INLINE_PREVIEW_TYPES = new Set([
+  // Raster images only — never image/svg+xml.
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/apng',
+  'image/bmp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+  // Audio.
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+  'audio/ogg',
+  'audio/opus',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/webm',
+  'audio/flac',
+  // Video.
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'video/quicktime',
+  'video/x-msvideo',
+  'video/x-matroska',
+  'video/mpeg',
+  'video/3gpp',
+]);
+
+/**
+ * True when the stored type is one a browser can safely render inline. The value is sanitised here
+ * even though the caller passes the already-effective type, so an unvalidated string can never
+ * widen the allow-list.
+ */
+export function isInlinePreviewable(mimeType: string | null | undefined): boolean {
+  const normalized = sanitizeMimeType(mimeType);
+  if (normalized === null) return false;
+  const bare = normalized.split(';', 1)[0]!.trim();
+  return INLINE_PREVIEW_TYPES.has(bare);
+}

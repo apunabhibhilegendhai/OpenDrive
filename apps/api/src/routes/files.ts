@@ -25,6 +25,7 @@ import {
   findActiveStorageObjectByFileId,
   markStorageObjectDeleted,
 } from '../db/repositories/storage-objects.js';
+import { isInlinePreviewable } from '../mime.js';
 import { decodeCursor } from '../pagination.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
@@ -159,7 +160,10 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
       const read = await provider.openReadStream(object.ref);
       void reply.header('content-type', file.mimeType);
       void reply.header('content-length', String(read.length));
-      void reply.header('content-disposition', contentDisposition(file.originalFilename));
+      void reply.header(
+        'content-disposition',
+        contentDisposition(file.originalFilename, file.mimeType),
+      );
       void reply.header('cache-control', 'private, no-store');
       // Ranged reads are not advertised until a provider supports them; `Range` requests are
       // answered with the whole object rather than a wrong partial one.
@@ -252,8 +256,15 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
   );
 };
 
-/** A conservative `Content-Disposition` that never lets a filename break out of the header. */
-function contentDisposition(filename: string): string {
+/**
+ * A conservative `Content-Disposition` that never lets a filename break out of the header. A
+ * safe-to-render image/audio/video is served `inline` so the browser shows it rather than saving
+ * it; everything else — HTML and SVG included, which could execute — keeps downloading. The
+ * `Content-Type` is already the sanitised effective type, and `x-content-type-options: nosniff` is
+ * set globally, so the browser will not reinterpret a served body.
+ */
+function contentDisposition(filename: string, mimeType: string): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  const disposition = isInlinePreviewable(mimeType) ? 'inline' : 'attachment';
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }

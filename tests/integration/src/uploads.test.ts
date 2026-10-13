@@ -105,8 +105,12 @@ async function completeOrFail(token: string, uploadId: string) {
 }
 
 /** A registered user who can upload, plus the id of one file uploaded in a single part. */
-async function uploadOnePart(token: string, filename: string, content: Buffer) {
-  const initiated = await initiate(token, { filename, sizeBytes: content.byteLength });
+async function uploadOnePart(token: string, filename: string, content: Buffer, mimeType?: string) {
+  const initiated = await initiate(token, {
+    filename,
+    sizeBytes: content.byteLength,
+    ...(mimeType === undefined ? {} : { mimeType }),
+  });
   const part = await putPart(token, initiated.uploadId, 1, content);
   expect(part.statusCode).toBe(200);
   const completed = await completeOrFail(token, initiated.uploadId);
@@ -141,6 +145,43 @@ describe('upload workflow', () => {
     expect(download.statusCode).toBe(200);
     expect(download.headers['content-length']).toBe(String(content.byteLength));
     expect(download.rawPayload.equals(content)).toBe(true);
+  });
+
+  it('previews safe media inline and forces everything else to download', async () => {
+    const account = await createAccount(h.sql);
+
+    const image = await uploadOnePart(
+      account.token,
+      'photo.png',
+      Buffer.from('89504e470d0a1a0a', 'hex'),
+      'image/png',
+    );
+    const svg = await uploadOnePart(
+      account.token,
+      'logo.svg',
+      Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+      'image/svg+xml',
+    );
+    const text = await uploadOnePart(account.token, 'notes.txt', Buffer.from('hi'), 'text/plain');
+
+    const fetchContent = (fileId: string) =>
+      h.server.inject({
+        method: 'GET',
+        url: `/api/v1/files/${fileId}/content`,
+        headers: bearer(account.token),
+      });
+
+    const imageResponse = await fetchContent(image.fileId);
+    expect(imageResponse.statusCode).toBe(200);
+    expect(imageResponse.headers['content-type']).toBe('image/png');
+    expect(imageResponse.headers['content-disposition']).toMatch(/^inline;/);
+
+    // An image type that is also a scriptable document must still download, as must a plain text.
+    const svgResponse = await fetchContent(svg.fileId);
+    expect(svgResponse.headers['content-disposition']).toMatch(/^attachment;/);
+
+    const textResponse = await fetchContent(text.fileId);
+    expect(textResponse.headers['content-disposition']).toMatch(/^attachment;/);
   });
 
   it('assembles a multi-part object in order', async () => {
