@@ -20,13 +20,18 @@ cannot be trusted with. The decision and its rationale are in
                                              └─ Redis 7     (rate limits, short-lived jobs)
 ```
 
-PostgreSQL (`5432`) and Redis (`6379`) are **not** published. They exist only on the runner's
-Docker network. Two HTTPS hostnames are the entire public surface:
+Kong (`:8000`) and Redis Commander (`:8081`) are reached only through the two HTTPS hostnames in
+the table below. Postgres and Redis **are** published on the runner's loopback — `db` as
+`5433:5432`, Redis as `6379` — but the only route to either is the Access-gated `db.` /
+`redis-tcp.` ingress on the same tunnel, which demands a service token. The public surface is
+therefore four hostnames, not two, and the two raw-TCP ones are authenticated rather than open:
 
-| Hostname                       | Ingress target   | What it serves                                    | Login                                        |
-| ------------------------------ | ---------------- | ------------------------------------------------- | -------------------------------------------- |
-| `supabase.opendrive.indevs.in` | `localhost:8000` | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
-| `redis.opendrive.indevs.in`    | `localhost:8081` | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis`                            |
+| Hostname                          | Ingress target   | What it serves                                    | Login                                        |
+| --------------------------------- | ---------------- | ------------------------------------------------- | -------------------------------------------- |
+| `supabase.opendrive.indevs.in`    | `localhost:8000` | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
+| `redis.opendrive.indevs.in`       | `localhost:8081` | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis`                            |
+| `db.opendrive.indevs.in`          | `localhost:5433` | Postgres, raw TCP (what `DATABASE_URL` dials)     | Cloudflare Access service token              |
+| `redis-tcp.opendrive.indevs.in`   | `localhost:6379` | Redis, raw TCP (what `REDIS_URL` dials)           | Cloudflare Access service token              |
 
 Both hostnames are Cloudflare-proxied CNAMEs to the `database` tunnel. The tunnel ingress is
 remotely managed (Cloudflare Zero Trust), not a local `cloudflared` config file.
@@ -37,14 +42,17 @@ remotely managed (Cloudflare Zero Trust), not a local `cloudflared` config file.
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                                                                      |
 | The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                                                                 |
-| OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql`, `102-opendrive-harden-rls-and-grants.sql` |
-| Least-privilege role SQL           | `supabase/volumes/db/init/zz-opendrive-role.sql` (run every session by the workflow)                                                            |
+| OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql`, `102-opendrive-harden-rls-and-grants.sql`, `103-opendrive-raise-size-ceilings.sql` |
+| Least-privilege role               | `.github/workflows/supabase-host.yml`, step `Ensure the OpenDrive application role` — runs every session before the migrations, followed by `Grant the OpenDrive application role its runtime DML` |
 | CI (unchanged contract)            | `.github/workflows/ci.yml` in this repo — service containers only, no secrets                                                                   |
 
 The migration files in the infra repo are copies of `supabase/migrations/20261010000001_*.sql`,
-`20261011000001_*.sql` and `20261012000001_*.sql` here. **When a migration is added or changed in
-this repo, copy it into the infra repo's `supabase/migrations/` as well** (the infra repo's own
-`001`–`008` belong to an unrelated app that shares the instance).
+`20261011000001_*.sql`, `20261012000001_*.sql` and `20261012000002_*.sql` here, renamed to the
+`100`–`103` prefixes so they sort after the infra repo's own. **When a migration is added or
+changed in this repo, copy it into the infra repo's `supabase/migrations/` as well** (the infra
+repo's own `001`–`008` belong to an unrelated app that shares the instance). The copy is
+byte-identical on purpose: the runner applies them with plain `psql`, and `101` relies on not
+running inside a transaction.
 
 ## Security model (RLS)
 
@@ -115,9 +123,9 @@ token) and pointing `DATABASE_URL` at that loopback URL; the same tunnel is avai
 tooling via `pg-tunnel.sh`. Redis uses the identical pattern on `redis-tcp.opendrive.indevs.in`
 (`--url 127.0.0.1:6379`), which is what lets the API share rate-limit counters (D37). Connected as
 `opendrive_app`, expect no rights beyond the `public` schema and, per D20/D36, `BYPASSRLS`. The
-session workflow also grants `opendrive_app` `EXECUTE` on the `public` functions (step “Grant
-OpenDrive runtime privileges”), because the `opendrive_*` helpers revoke `PUBLIC` and would
-otherwise fail every upload with `42501`.
+session workflow also grants `opendrive_app` `EXECUTE` on the `public` functions (step `Grant the
+OpenDrive application role its runtime DML`), because the `opendrive_*` helpers revoke `PUBLIC`
+and would otherwise fail every upload with `42501`.
 
 ## Limitations (read before relying on this)
 

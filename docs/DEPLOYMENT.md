@@ -106,7 +106,7 @@ Non-secret configuration. Optional ones fall back to the defaults shown by the w
 | `PUBLIC_BASE_URL`                          | (empty)                         | Origin used to build share links.                     |
 | `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)            | Per-deployment ceiling for a declared upload.         |
 | `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)               | Client part size; the provider may clamp it.          |
-| `TELEGRAM_API_BASE_URL`                    | Telegram cloud API              | Point at a self-hosted server to lift the 20 MiB cap. |
+| `TELEGRAM_API_BASE_URL`                    | `http://127.0.0.1:8081`         | Loopback → the job compiles, caches and starts the **Local Bot API** server, lifting the 20 MiB retrieval cap. Set to `https://api.telegram.org` to skip that ~20 min TDLib build — but then only 20 MiB files come back. |
 | `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)             | Must stay downloadable by the Bot API.                |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                           | Per principal.                                        |
 | `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                           | Per principal, part route only.                       |
