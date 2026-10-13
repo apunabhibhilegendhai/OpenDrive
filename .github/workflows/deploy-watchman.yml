@@ -1,0 +1,33 @@
+# TEMPORARY one-off: deploy the workflow-watchman Worker (source lives in the Supabase-Actions repo)
+# after the OpenDrive workflows were consolidated into opendrive.yml. Delete after a successful run.
+name: Deploy workflow-watchman (temporary)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the watchman source (Supabase-Actions)
+        uses: actions/checkout@v5
+        with:
+          repository: apunabhibhilegendhai/Supabase-Actions
+          ref: master
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Deploy the Worker
+        working-directory: worker/workflow-watchman
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: '1b0b7964eefd07d50f77f95b61799b9d'
+        run: npx --yes wrangler@3 deploy
