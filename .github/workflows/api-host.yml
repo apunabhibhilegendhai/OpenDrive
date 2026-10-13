@@ -45,7 +45,7 @@ on:
 
 permissions:
   contents: read
-  actions: write   # re-dispatch the next session in the end-of-run self-chain
+  actions: write # re-dispatch the next session in the end-of-run self-chain
 
 concurrency:
   group: api-host
