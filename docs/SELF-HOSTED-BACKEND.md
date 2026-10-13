@@ -26,25 +26,25 @@ the table below. Postgres and Redis **are** published on the runner's loopback �
 `redis-tcp.` ingress on the same tunnel, which demands a service token. The public surface is
 therefore four hostnames, not two, and the two raw-TCP ones are authenticated rather than open:
 
-| Hostname                          | Ingress target   | What it serves                                    | Login                                        |
-| --------------------------------- | ---------------- | ------------------------------------------------- | -------------------------------------------- |
-| `supabase.opendrive.indevs.in`    | `localhost:8000` | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
-| `redis.opendrive.indevs.in`       | `localhost:8081` | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis`                            |
-| `db.opendrive.indevs.in`          | `localhost:5433` | Postgres, raw TCP (what `DATABASE_URL` dials)     | Cloudflare Access service token              |
-| `redis-tcp.opendrive.indevs.in`   | `localhost:6379` | Redis, raw TCP (what `REDIS_URL` dials)           | Cloudflare Access service token              |
+| Hostname                        | Ingress target   | What it serves                                    | Login                                        |
+| ------------------------------- | ---------------- | ------------------------------------------------- | -------------------------------------------- |
+| `supabase.opendrive.indevs.in`  | `localhost:8000` | Kong → Studio, Auth, REST, Realtime, Functions    | `supabase` / the `DASHBOARD_PASSWORD` secret |
+| `redis.opendrive.indevs.in`     | `localhost:8081` | Redis Commander (Web UI for the rate-limit Redis) | `redis` / `redis`                            |
+| `db.opendrive.indevs.in`        | `localhost:5433` | Postgres, raw TCP (what `DATABASE_URL` dials)     | Cloudflare Access service token              |
+| `redis-tcp.opendrive.indevs.in` | `localhost:6379` | Redis, raw TCP (what `REDIS_URL` dials)           | Cloudflare Access service token              |
 
-Both hostnames are Cloudflare-proxied CNAMEs to the `database` tunnel. The tunnel ingress is
+All four hostnames are Cloudflare-proxied CNAMEs to the `database` tunnel. The tunnel ingress is
 remotely managed (Cloudflare Zero Trust), not a local `cloudflared` config file.
 
 ## Where each piece lives
 
-| Piece                              | Location                                                                                                                                        |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                                                                      |
-| The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                                                                 |
-| OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql`, `102-opendrive-harden-rls-and-grants.sql`, `103-opendrive-raise-size-ceilings.sql` |
+| Piece                              | Location                                                                                                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The stack + workflow               | `github.com/apunlegendtha/supabase-actions` (separate repo, branch `main`)                                                                                                                         |
+| The workflow                       | `.github/workflows/supabase-host.yml` (runs ~5h per 6h session)                                                                                                                                    |
+| OpenDrive migrations applied there | `supabase/migrations/100-opendrive-initial-schema.sql`, `101-opendrive-identity-ownership-quota.sql`, `102-opendrive-harden-rls-and-grants.sql`, `103-opendrive-raise-size-ceilings.sql`           |
 | Least-privilege role               | `.github/workflows/supabase-host.yml`, step `Ensure the OpenDrive application role` — runs every session before the migrations, followed by `Grant the OpenDrive application role its runtime DML` |
-| CI (unchanged contract)            | `.github/workflows/ci.yml` in this repo — service containers only, no secrets                                                                   |
+| CI (unchanged contract)            | `.github/workflows/ci.yml` in this repo — service containers only, no secrets                                                                                                                      |
 
 The migration files in the infra repo are copies of `supabase/migrations/20261010000001_*.sql`,
 `20261011000001_*.sql`, `20261012000001_*.sql` and `20261012000002_*.sql` here, renamed to the

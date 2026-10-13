@@ -99,21 +99,21 @@ opendrive_reserve_storage`. The `supabase-actions` session grants this on every 
 
 Non-secret configuration. Optional ones fall back to the defaults shown by the workflow.
 
-| Variable                                   | Default                         | Notes                                                 |
-| ------------------------------------------ | ------------------------------- | ----------------------------------------------------- |
-| `STORAGE_PROVIDER`                         | `telegram-experimental`         | Must not be `none`, or uploads answer 503.            |
-| `CORS_ORIGINS`                             | (empty → CORS off)              | Comma-separated browser origins.                      |
-| `PUBLIC_BASE_URL`                          | (empty)                         | Origin used to build share links.                     |
-| `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)            | Per-deployment ceiling for a declared upload.         |
-| `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)               | Client part size; the provider may clamp it.          |
+| Variable                                   | Default                         | Notes                                                                                                                                                                                                                     |
+| ------------------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `STORAGE_PROVIDER`                         | `telegram-experimental`         | Must not be `none`, or uploads answer 503.                                                                                                                                                                                |
+| `CORS_ORIGINS`                             | (empty → CORS off)              | Comma-separated browser origins.                                                                                                                                                                                          |
+| `PUBLIC_BASE_URL`                          | (empty)                         | Origin used to build share links.                                                                                                                                                                                         |
+| `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)            | Per-deployment ceiling for a declared upload.                                                                                                                                                                             |
+| `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)               | Client part size; the provider may clamp it.                                                                                                                                                                              |
 | `TELEGRAM_API_BASE_URL`                    | `http://127.0.0.1:8081`         | Loopback → the job compiles, caches and starts the **Local Bot API** server, lifting the 20 MiB retrieval cap. Set to `https://api.telegram.org` to skip that ~20 min TDLib build — but then only 20 MiB files come back. |
-| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)             | Must stay downloadable by the Bot API.                |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                           | Per principal.                                        |
-| `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                           | Per principal, part route only.                       |
-| `UPLOAD_SESSION_TTL_HOURS`                 | `24`                            | How long an incomplete upload keeps its hold.         |
-| `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                             | Open uploads at once per principal.                   |
-| `DATABASE_TUNNEL_HOSTNAME`                 | `db.opendrive.indevs.in`        | Access-gated hostname the DB tunnel is dialled at.    |
-| `REDIS_TUNNEL_HOSTNAME`                    | `redis-tcp.opendrive.indevs.in` | Access-gated hostname the Redis tunnel is dialled at. |
+| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)             | Must stay downloadable by the Bot API.                                                                                                                                                                                    |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                           | Per principal.                                                                                                                                                                                                            |
+| `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                           | Per principal, part route only.                                                                                                                                                                                           |
+| `UPLOAD_SESSION_TTL_HOURS`                 | `24`                            | How long an incomplete upload keeps its hold.                                                                                                                                                                             |
+| `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                             | Open uploads at once per principal.                                                                                                                                                                                       |
+| `DATABASE_TUNNEL_HOSTNAME`                 | `db.opendrive.indevs.in`        | Access-gated hostname the DB tunnel is dialled at.                                                                                                                                                                        |
+| `REDIS_TUNNEL_HOSTNAME`                    | `redis-tcp.opendrive.indevs.in` | Access-gated hostname the Redis tunnel is dialled at.                                                                                                                                                                     |
 
 ## Running it
 
