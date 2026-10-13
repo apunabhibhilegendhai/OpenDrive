@@ -273,3 +273,62 @@ describe('ApiClient upload parts', () => {
     expect(server.calls).toHaveLength(0);
   });
 });
+
+describe('ApiClient upload completion', () => {
+  const completeRoute = (respond: FakeRoute['respond']): FakeRoute => ({
+    method: 'POST',
+    path: /^\/api\/v1\/uploads\/upl_[0-9a-z]+\/complete$/,
+    respond,
+  });
+
+  it('returns the file when finalization finishes inside the request', async () => {
+    const server = createFakeServer([
+      completeRoute(() => ({ status: 200, body: { file: fileFixture() } })),
+    ]);
+    const { client } = clientFor(server, { token: 'token' });
+
+    const outcome = await client.completeUpload(UPLOAD_ID);
+    expect(outcome).toEqual({ status: 'ready', file: fileFixture() });
+  });
+
+  it('reports processing on 202 and lets the caller poll to the file', async () => {
+    let call = 0;
+    const server = createFakeServer([
+      completeRoute(() => {
+        call += 1;
+        return call === 1
+          ? {
+              status: 202,
+              body: { uploadId: UPLOAD_ID, fileId: FILE_ID, state: 'processing' },
+            }
+          : { status: 200, body: { file: fileFixture({ id: FILE_ID }) } };
+      }),
+    ]);
+    const { client } = clientFor(server, { token: 'token' });
+
+    const first = await client.completeUpload(UPLOAD_ID);
+    expect(first).toEqual({ status: 'processing', uploadId: UPLOAD_ID, fileId: FILE_ID });
+
+    const second = await client.completeUpload(UPLOAD_ID);
+    expect(second).toEqual({ status: 'ready', file: fileFixture({ id: FILE_ID }) });
+    expect(server.calls).toHaveLength(2);
+  });
+
+  it('rejects a 202 body that does not match the accepted contract', async () => {
+    const server = createFakeServer([completeRoute(() => ({ status: 202, body: { nope: true } }))]);
+    const { client } = clientFor(server, { token: 'token' });
+
+    await expect(client.completeUpload(UPLOAD_ID)).rejects.toBeInstanceOf(ContractError);
+  });
+
+  it('surfaces a failed completion as the API problem', async () => {
+    const server = createFakeServer([
+      completeRoute(() => problem(503, 'STORAGE_UNAVAILABLE', 'Storage is unavailable.')),
+    ]);
+    const { client } = clientFor(server, { token: 'token' });
+
+    const failure = await client.completeUpload(UPLOAD_ID).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({ status: 503, code: 'STORAGE_UNAVAILABLE' });
+  });
+});

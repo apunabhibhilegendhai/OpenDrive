@@ -81,19 +81,21 @@ opendrive_reserve_storage`. The `supabase-actions` session grants this on every 
 
 ## Secrets (repository → Settings → Secrets and variables → Actions → Secrets)
 
-| Secret                     | What it is                                                                                                                                                  |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`             | Direct PostgreSQL URL the runner can reach (see the prerequisite above).                                                                                    |
-| `CLOUDFLARE_TUNNEL_TOKEN`  | The tunnel token from Cloudflare Zero Trust.                                                                                                                |
-| `CF_ACCESS_CLIENT_ID`      | Access service-token id for the Access-gated Postgres tunnel.                                                                                               |
-| `CF_ACCESS_CLIENT_SECRET`  | Access service-token secret for the same tunnel.                                                                                                            |
-| `SUPABASE_JWKS_URL`        | Access-token verification (asymmetric). Prefer this over the secret below. JWKS verification fails if the path is behind Bot Fight Mode or Access.          |
-| `SUPABASE_JWT_SECRET`      | HS256 fallback when no JWKS URL is configured.                                                                                                              |
-| `SUPABASE_JWT_ISSUER`      | Expected `iss` of an access token.                                                                                                                          |
-| `IP_HASH_SECRET`           | HMAC key for hashed client addresses. Rotating it invalidates old hashes.                                                                                   |
-| `REDIS_URL`                | Optional. `redis://…@127.0.0.1:6379/0` through the Access-gated `redis-tcp` tunnel; when set, rate-limit counters are shared (Redis) instead of in-process. |
-| `TELEGRAM_BOT_TOKEN`       | Telegram storage backend credential (D27).                                                                                                                  |
-| `TELEGRAM_STORAGE_CHAT_ID` | The channel the bot stores objects in.                                                                                                                      |
+| Secret                     | What it is                                                                                                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`             | Direct PostgreSQL URL the runner can reach (see the prerequisite above).                                                                                         |
+| `CLOUDFLARE_TUNNEL_TOKEN`  | The tunnel token from Cloudflare Zero Trust.                                                                                                                     |
+| `CF_ACCESS_CLIENT_ID`      | Access service-token id for the Access-gated Postgres tunnel.                                                                                                    |
+| `CF_ACCESS_CLIENT_SECRET`  | Access service-token secret for the same tunnel.                                                                                                                 |
+| `SUPABASE_JWKS_URL`        | Access-token verification (asymmetric). Prefer this over the secret below. JWKS verification fails if the path is behind Bot Fight Mode or Access.               |
+| `SUPABASE_JWT_SECRET`      | HS256 fallback when no JWKS URL is configured.                                                                                                                   |
+| `SUPABASE_JWT_ISSUER`      | Expected `iss` of an access token.                                                                                                                               |
+| `IP_HASH_SECRET`           | HMAC key for hashed client addresses. Rotating it invalidates old hashes.                                                                                        |
+| `REDIS_URL`                | Optional. `redis://…@127.0.0.1:6379/0` through the Access-gated `redis-tcp` tunnel; when set, rate-limit counters are shared (Redis) instead of in-process.      |
+| `TELEGRAM_BOT_TOKEN`       | Telegram storage backend credential (D27).                                                                                                                       |
+| `TELEGRAM_STORAGE_CHAT_ID` | The channel the bot stores objects in.                                                                                                                           |
+| `VITE_SUPABASE_ANON_KEY`   | Publishable Supabase anon key, baked into the **web** bundle at build time (`web-host.yml`). It is designed to be shipped to browsers; RLS is the real boundary. |
+| `VERCEL_TOKEN`             | Vercel API token used by `web-host.yml` to publish the web build to the `opendrive` project.                                                                     |
 
 ## Variables (repository → … → Variables)
 
@@ -107,13 +109,25 @@ Non-secret configuration. Optional ones fall back to the defaults shown by the w
 | `STORAGE_MAX_FILE_SIZE_BYTES`              | `2147483648` (2 GiB)            | Per-deployment ceiling for a declared upload.                                                                                                                                                                             |
 | `STORAGE_CHUNK_SIZE_BYTES`                 | `8388608` (8 MiB)               | Client part size; the provider may clamp it.                                                                                                                                                                              |
 | `TELEGRAM_API_BASE_URL`                    | `http://127.0.0.1:8081`         | Loopback → the job compiles, caches and starts the **Local Bot API** server, lifting the 20 MiB retrieval cap. Set to `https://api.telegram.org` to skip that ~20 min TDLib build — but then only 20 MiB files come back. |
-| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)             | Must stay downloadable by the Bot API.                                                                                                                                                                                    |
+| `TELEGRAM_MAX_PART_SIZE_BYTES`             | `20971520` (20 MiB)             | Largest single part. Must be downloadable by the Bot API **and** ≤ the 100 MiB Cloudflare edge cap (`104857600`).                                                                                                         |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE`           | `120`                           | Per principal.                                                                                                                                                                                                            |
 | `RATE_LIMIT_UPLOAD_PARTS_PER_MINUTE`       | `600`                           | Per principal, part route only.                                                                                                                                                                                           |
 | `UPLOAD_SESSION_TTL_HOURS`                 | `24`                            | How long an incomplete upload keeps its hold.                                                                                                                                                                             |
 | `UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL` | `3`                             | Open uploads at once per principal.                                                                                                                                                                                       |
 | `DATABASE_TUNNEL_HOSTNAME`                 | `db.opendrive.indevs.in`        | Access-gated hostname the DB tunnel is dialled at.                                                                                                                                                                        |
 | `REDIS_TUNNEL_HOSTNAME`                    | `redis-tcp.opendrive.indevs.in` | Access-gated hostname the Redis tunnel is dialled at.                                                                                                                                                                     |
+| `VITE_SUPABASE_URL`                        | (none)                          | `https://supabase.opendrive.indevs.in`. Baked into the web bundle.                                                                                                                                                        |
+| `VITE_API_BASE_URL`                        | (none)                          | `https://api.opendrive.indevs.in`. Baked into the web bundle; the browser talks to the API directly, so this origin must be in `CORS_ORIGINS`.                                                                            |
+| `VERCEL_ORG_ID`                            | (none)                          | Vercel team id, so the CLI deploys to the existing project instead of creating one. Not secret.                                                                                                                           |
+| `VERCEL_PROJECT_ID`                        | (none)                          | Vercel project id (`opendrive`). Not secret.                                                                                                                                                                              |
+
+> **The part size is capped by Cloudflare at 100 MiB, not by Telegram.** The public API is a
+> Cloudflare-proxied hostname, so the edge rejects any request body above **100 MiB** with `413`
+> before it reaches the origin (measured 2026-10-13: `104857600` passes, `105906176` fails).
+> Keep `STORAGE_CHUNK_SIZE_BYTES` and `TELEGRAM_MAX_PART_SIZE_BYTES` at `104857600` (= 100 MiB).
+> The Local Bot API server can hold a 2000 MB file, but that ceiling sits behind this one: a
+> 2 GiB object arrives as **21 parts**, not one request. Setting the part size above 100 MiB
+> makes every large part fail at the edge — it does not raise the ceiling.
 
 ## Running it
 
@@ -137,6 +151,46 @@ curl -fsS https://api.opendrive.indevs.in/healthz     # liveness
 curl -fsS https://api.opendrive.indevs.in/readyz      # dependencies: postgres, redis, storage
 curl -fsS https://api.opendrive.indevs.in/openapi.json >/dev/null && echo docs ok
 ```
+
+## Hosting the web app (Vercel)
+
+The browser app is a static build published to Vercel at `https://opendrive.indevs.in`. It is built
+and uploaded by `.github/workflows/web-host.yml` (D38), which runs on a push that touches
+`apps/web/**`, `packages/shared/**`, or `pnpm-lock.yaml`, and can also be started by hand
+(**Actions → Web host (Vercel) → Run workflow**).
+
+The workflow:
+
+1. installs the workspace, builds `@opendrive/shared`, then builds `@opendrive/web` with
+   `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_API_BASE_URL` from repository settings;
+2. copies `apps/web/vercel.json` (the SPA rewrite) beside the output; and
+3. runs `vercel deploy apps/web/dist --prod`, authorizing with `VERCEL_TOKEN` and targeting the
+   existing project through `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID`.
+
+Vercel never builds the monorepo: a pnpm workspace needs every member's dependencies, and building
+here keeps one toolchain (the same one CI uses) and hands Vercel a finished directory. The app talks
+to the API directly from the browser, so `opendrive.indevs.in` must be listed in `CORS_ORIGINS`.
+
+## Large uploads: one Telegram document per file
+
+The public API is Cloudflare-proxied, so the edge rejects any single request body above **100 MiB**
+(measured 2026-10-13: `104857600` passes, `105906176` fails). A file far larger than that therefore
+_arrives_ as many parts, but it should still be stored as **one** Telegram document. The provider has
+a staged mode for exactly that (D39):
+
+- With `TELEGRAM_API_BASE_URL` pointing at the loopback Local Bot API server, the provider stages
+  each received part to a local spool file instead of sending it. At `POST /uploads/:id/complete` it
+  verifies the assembled length and whole-object checksum from the spool, reassembles the parts, and
+  sends the object as a single `sendDocument` — up to the server's own 2000 MB ceiling.
+- That send is slow, so `complete` answers **`202`** with `{ state: 'processing' }` while it runs in
+  the background; the client polls the same endpoint until it answers **`200`** with the file. Small
+  objects (≤ 64 MiB) still settle inside the first request, so the common case stays one round trip.
+- The spool is removed only once the object is committed. A failed send leaves it in place, so a
+  retry of `complete` re-sends from byte zero without the client re-uploading anything. Finalizing is
+  idempotent: polling never starts a second send.
+
+`STORAGE_MAX_FILE_SIZE_BYTES` (2 GiB) is the declared ceiling; with a 100 MiB part size a 2 GiB
+object is uploaded as 21 parts and finalized as one document.
 
 ## What “multi-user uploads with rate limits” means here
 

@@ -95,6 +95,23 @@ export interface TelegramStorageProviderOptions {
   maxObjectSizeBytes?: number;
   /** Largest accepted part; also the largest single file Telegram must serve back. */
   maxPartSizeBytes?: number;
+  /**
+   * Largest object this provider may deliver as ONE Telegram document. Defaults to
+   * `maxPartSizeBytes`, i.e. no whole-object delivery beyond the part ceiling. Pointing at a
+   * `--local` Bot API server (which lifts the 20 MiB retrieval ceiling) lets an operator raise
+   * this to the server's own 2000 MB ceiling so a whole object rides in a single `sendDocument`.
+   */
+  maxWholeObjectSizeBytes?: number;
+  /**
+   * Deliver a multipart object as a single document instead of one document per part.
+   *
+   * When true and the declared object fits `maxWholeObjectSizeBytes`, `uploadPart` streams each
+   * part to a local spool file instead of uploading it, and `finalizeUpload` reassembles and
+   * sends the object as one `sendDocument`. This is what lets a client that must send small
+   * parts (for example behind a proxy with a 100 MiB request-body cap) still store one document
+   * per file. Defaults to false: each part becomes its own document.
+   */
+  stagePartsToSingleDocument?: boolean;
   sessionTtlSeconds?: number;
   /** How many times a transient read failure is retried before it is surfaced. */
   readRetryAttempts?: number;
@@ -125,15 +142,22 @@ interface StagedPart {
   messageId: number;
   fileId: string;
   fileSize: number;
+  /**
+   * Set in staged mode: the part's bytes on local disk, not yet sent to Telegram. The part is
+   * uploaded (as part of the one whole-object document) at `finalizeUpload`.
+   */
+  spoolPath?: string;
 }
 
 interface TelegramUpload {
   input: InitiateUploadInput;
-  mode: 'multipart' | 'single-shot';
+  mode: 'multipart' | 'single-shot' | 'staged';
   parts: Map<number, StagedPart>;
   receivedBytes: number;
   session: UploadSession;
   finalized: StoredObject | null;
+  /** Directory holding staged part files (staged mode only). Created on the first part. */
+  spoolDir?: string;
 }
 
 /** In-process record of completed objects, used for usage/`storedAt` only. */
@@ -303,6 +327,16 @@ function localFileStream(filePath: string): ByteStream {
   })();
 }
 
+/** Normalises a byte source to a stream so one code path handles buffers and streams alike. */
+function toByteStream(source: ByteSource): ByteStream {
+  if (source instanceof Uint8Array) {
+    return (async function* generate(): ByteStream {
+      yield source;
+    })();
+  }
+  return source;
+}
+
 export class TelegramStorageProvider implements StorageProvider {
   readonly providerId: string;
   readonly displayName: string;
@@ -331,6 +365,8 @@ export class TelegramStorageProvider implements StorageProvider {
   private readonly transport: TelegramTransport;
   private readonly maxObjectSizeBytes: number;
   private readonly maxPartSizeBytes: number;
+  private readonly maxWholeObjectSizeBytes: number;
+  private readonly stagePartsToSingleDocument: boolean;
   private readonly sessionTtlSeconds: number;
   private readonly readRetryAttempts: number;
   private readonly readRetryDelayMs: number;
@@ -346,6 +382,8 @@ export class TelegramStorageProvider implements StorageProvider {
     this.displayName = options.displayName ?? 'Telegram Bot API storage (experimental)';
     this.maxObjectSizeBytes = options.maxObjectSizeBytes ?? DEFAULT_MAX_OBJECT_BYTES;
     this.maxPartSizeBytes = options.maxPartSizeBytes ?? DEFAULT_MAX_PART_BYTES;
+    this.maxWholeObjectSizeBytes = options.maxWholeObjectSizeBytes ?? this.maxPartSizeBytes;
+    this.stagePartsToSingleDocument = options.stagePartsToSingleDocument ?? false;
     this.sessionTtlSeconds = options.sessionTtlSeconds ?? DEFAULT_SESSION_TTL_SECONDS;
     this.readRetryAttempts = options.readRetryAttempts ?? DEFAULT_READ_RETRY_ATTEMPTS;
     this.readRetryDelayMs = options.readRetryDelayMs ?? DEFAULT_READ_RETRY_DELAY_MS;
@@ -455,9 +493,14 @@ export class TelegramStorageProvider implements StorageProvider {
       expiresAt,
     };
 
+    // Staged mode reassembles the parts into one document at finalize. It is only chosen when
+    // the whole object fits the single-document ceiling, so the send can always be one file.
+    const deliverAsSingleDocument =
+      this.stagePartsToSingleDocument && input.sizeBytes <= this.maxWholeObjectSizeBytes;
+
     this.uploads.set(input.uploadId, {
       input,
-      mode: 'multipart',
+      mode: deliverAsSingleDocument ? 'staged' : 'multipart',
       parts: new Map(),
       receivedBytes: 0,
       session,
@@ -500,6 +543,12 @@ export class TelegramStorageProvider implements StorageProvider {
       );
     }
 
+    // Staged delivery: keep the bytes on local disk; the object is sent as one document at
+    // finalize. Multipart delivery sends each part as its own document immediately.
+    if (upload.mode === 'staged') {
+      return await this.stagePartToDisk(upload, part);
+    }
+
     const bytes = await this.stageBytes(part.source, part.sizeBytes);
     const receipt = await this.uploadPartBytes({
       partNumber: part.partNumber,
@@ -520,6 +569,166 @@ export class TelegramStorageProvider implements StorageProvider {
       receivedBytes: bytes.byteLength,
       checksumSha256: null,
     };
+  }
+
+  /**
+   * Streams one part to a per-upload spool file without buffering it whole.
+   *
+   * The bytes never touch Telegram here: staged mode holds them locally until `finalizeUpload`
+   * sends the reassembled object as a single document. The part is verified as it is written
+   * (declared length, and its own checksum when supplied); any failure removes the partial file
+   * so a retry starts from a clean slot.
+   */
+  private async stagePartToDisk(
+    upload: TelegramUpload,
+    part: UploadPartInput,
+  ): Promise<UploadPartResult> {
+    upload.spoolDir ??= await mkdtemp(join(this.spoolDir, 'opendrive-stage-'));
+    const partPath = join(upload.spoolDir, `part-${part.partNumber}.bin`);
+    const hash = createHash('sha256');
+    let total = 0;
+    const metered = (async function* generate(): ByteStream {
+      for await (const chunk of toByteStream(part.source)) {
+        total += chunk.byteLength;
+        if (total > part.sizeBytes) {
+          throw providerLimitExceeded(
+            `Received more than the declared ${part.sizeBytes} bytes for part ${part.partNumber}.`,
+          );
+        }
+        hash.update(chunk);
+        yield chunk;
+      }
+    })();
+    try {
+      await pipeline(metered, createWriteStream(partPath));
+    } catch (error) {
+      await rm(partPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    if (total !== part.sizeBytes) {
+      await rm(partPath, { force: true }).catch(() => undefined);
+      throw integrityCheckFailed(`Declared ${part.sizeBytes} bytes but received ${total}.`);
+    }
+    const actualChecksum = hash.digest('hex');
+    if (part.checksumSha256 != null && part.checksumSha256 !== actualChecksum) {
+      await rm(partPath, { force: true }).catch(() => undefined);
+      throw integrityCheckFailed(`Part ${part.partNumber} failed its checksum check.`);
+    }
+    upload.parts.set(part.partNumber, {
+      partNumber: part.partNumber,
+      messageId: -1,
+      fileId: '',
+      fileSize: total,
+      spoolPath: partPath,
+    });
+    upload.receivedBytes += total;
+    upload.session = { ...upload.session, state: 'in_progress' };
+    return {
+      partNumber: part.partNumber,
+      receivedBytes: total,
+      checksumSha256: part.checksumSha256 ?? null,
+    };
+  }
+
+  /** Re-reads every staged part file in part order as one continuous, re-readable stream. */
+  private async *concatSpoolStream(parts: readonly StagedPart[]): ByteStream {
+    for (const part of parts) {
+      const path = part.spoolPath;
+      if (path === undefined) {
+        throw new AppError('INTERNAL', {
+          detail: `Staged part ${part.partNumber} has no spool file.`,
+        });
+      }
+      try {
+        for await (const chunk of createReadStream(path)) yield chunk;
+      } catch (error) {
+        // The stream is re-readable, so a retry reopens it and starts from byte zero.
+        throw new TelegramApiError(
+          `Staged part file "${path}" could not be read.`,
+          '',
+          null,
+          true,
+          error,
+        );
+      }
+    }
+  }
+
+  /** Whole-object SHA-256 of the staged parts, read in part order before anything is sent. */
+  private async hashSpooledParts(parts: readonly StagedPart[]): Promise<string> {
+    const hash = createHash('sha256');
+    for await (const chunk of this.concatSpoolStream(parts)) hash.update(chunk);
+    return hash.digest('hex');
+  }
+
+  /** Removes the staged-mode spool directory and forgets the part files. */
+  private async cleanupSpool(upload: TelegramUpload): Promise<void> {
+    const dir = upload.spoolDir;
+    if (dir === undefined) return;
+    upload.spoolDir = undefined;
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  /**
+   * Sends the reassembled staged parts as ONE Telegram document.
+   *
+   * Integrity is checked before anything is sent — the assembled length and the whole-object
+   * checksum (when declared) are verified from the spool files — so a mismatch leaves no orphan
+   * document in the chat. The spool is removed only once the object is committed; a failed send
+   * keeps it, so the client can retry finalize without re-uploading.
+   */
+  private async commitStagedUpload(upload: TelegramUpload): Promise<StoredObject> {
+    const expectedParts = upload.session.expectedParts;
+    if (expectedParts !== null && upload.parts.size !== expectedParts) {
+      throw invalidSessionState(
+        `Upload ${upload.session.uploadId} is missing parts: expected ${expectedParts}, ` +
+          `received ${upload.parts.size}.`,
+      );
+    }
+    const ordered = [...upload.parts.values()].sort(
+      (left, right) => left.partNumber - right.partNumber,
+    );
+    for (let index = 0; index < ordered.length; index += 1) {
+      const part = ordered[index];
+      if (part !== undefined && part.partNumber !== index + 1) {
+        throw invalidSessionState(`Upload ${upload.session.uploadId} has a gap in part numbers.`);
+      }
+    }
+    let received = 0;
+    for (const part of ordered) received += part.fileSize;
+    if (received !== upload.input.sizeBytes) {
+      throw integrityCheckFailed(
+        `Upload ${upload.session.uploadId} staged ${received} bytes but declared ${upload.input.sizeBytes}.`,
+      );
+    }
+
+    const checksum = await this.hashSpooledParts(ordered);
+    const declaredChecksum = upload.input.checksumSha256 ?? null;
+    if (declaredChecksum !== null && declaredChecksum !== checksum) {
+      throw integrityCheckFailed('Whole-object checksum mismatch: nothing becomes readable.');
+    }
+
+    const receipt = await this.uploadPartBytes({
+      partNumber: 1,
+      fileId: upload.input.fileId,
+      sizeBytes: upload.input.sizeBytes,
+      openSource: () => this.concatSpoolStream(ordered),
+    });
+
+    upload.parts.clear();
+    upload.parts.set(1, {
+      partNumber: 1,
+      messageId: receipt.messageId,
+      fileId: receipt.fileId,
+      fileSize: upload.input.sizeBytes,
+    });
+    upload.receivedBytes = upload.input.sizeBytes;
+    upload.session = { ...upload.session, state: 'in_progress' };
+    const staged = upload.parts.get(1);
+    if (staged === undefined) throw new AppError('INTERNAL', { detail: 'Staged part 1 vanished.' });
+    const stored = await this.commitUpload(upload, [staged], checksum);
+    await this.cleanupSpool(upload);
+    return stored;
   }
 
   /**
@@ -576,16 +785,16 @@ export class TelegramStorageProvider implements StorageProvider {
     assertCapability(this, 'singleShotUpload', 'uploadWholeObject');
     const upload = this.requireUpload(input.session.uploadId);
     this.assertOpen(upload);
-    if (upload.mode === 'multipart' && upload.parts.size > 0) {
+    if (upload.mode !== 'single-shot' && upload.parts.size > 0) {
       throw invalidSessionState(
         `Upload ${input.session.uploadId} already has staged parts; ` +
           'refusing to mix multipart and single-object delivery in one session.',
       );
     }
-    if (input.sizeBytes > this.maxPartSizeBytes) {
+    if (input.sizeBytes > this.maxWholeObjectSizeBytes) {
       throw providerLimitExceeded(
-        `A whole-object upload must fit in one Telegram file; the part ceiling is ` +
-          `${this.maxPartSizeBytes} bytes. Use multipart delivery for larger objects.`,
+        `A whole-object upload must fit in one Telegram file; the single-document ceiling is ` +
+          `${this.maxWholeObjectSizeBytes} bytes. Use multipart delivery for larger objects.`,
       );
     }
     upload.mode = 'single-shot';
@@ -676,6 +885,11 @@ export class TelegramStorageProvider implements StorageProvider {
     if (upload.finalized !== null) return upload.finalized;
 
     this.assertOpen(upload);
+    // Staged mode reassembles the parts and sends ONE document; multipart mode verifies the
+    // parts already sent as separate documents. Both are idempotent (guarded above).
+    if (upload.mode === 'staged') {
+      return await this.commitStagedUpload(upload);
+    }
     const expectedParts = upload.session.expectedParts;
     if (
       upload.mode === 'multipart' &&
@@ -877,7 +1091,10 @@ export class TelegramStorageProvider implements StorageProvider {
       );
     }
     if (upload.session.state === 'aborted') return;
+    // Staged bytes live on local disk, never in the chat, so release the spool first.
+    await this.cleanupSpool(upload);
     for (const part of upload.parts.values()) {
+      if (part.messageId < 0) continue;
       try {
         await this.transport.deleteMessage(part.messageId);
       } catch {

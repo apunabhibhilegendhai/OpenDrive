@@ -34,6 +34,22 @@ function readEnv(name: string, env: Record<string, string | undefined>): string 
   return value === undefined || value.trim() === '' ? null : value.trim();
 }
 
+/** A self-hosted Bot API server started with `--local` is reached over loopback. */
+function isLocalBotApi(apiBaseUrl: string | null): boolean {
+  if (apiBaseUrl === null) return false;
+  try {
+    const { hostname } = new URL(apiBaseUrl);
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+/** The Local Bot API's per-document ceiling: 2000 MB, the reason to run `--local` at all. */
+const LOCAL_BOT_API_MAX_DOCUMENT_BYTES = 2_000_000_000;
+/** The public Bot API serves back at most 20 MiB, so a bigger document could never be read. */
+const PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES = 20 * 1024 * 1024;
+
 /**
  * The attached provider, or a 503.
  *
@@ -115,15 +131,28 @@ export function resolveStorageProvider(
           : { filesBaseUrl: config.telegram.filesBaseUrl }),
         ...(config.telegram.workDir === null ? {} : { workDir: config.telegram.workDir }),
       });
+      const localBotApi = isLocalBotApi(config.telegram.apiBaseUrl);
+      const maxPartSizeBytes = config.telegram.maxPartSizeBytes;
+      // The largest object that may ride as ONE document. `--local` raises it to the server's own
+      // 2000 MB ceiling; the public Bot API caps retrieval at 20 MiB, so nothing bigger could be
+      // read back even if it were accepted.
+      const wholeObjectCeiling = localBotApi
+        ? LOCAL_BOT_API_MAX_DOCUMENT_BYTES
+        : Math.min(
+            maxPartSizeBytes ?? PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES,
+            PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES,
+          );
       const provider = new TelegramStorageProvider({
         transport,
         // Keep the provider's own object ceiling equal to the size the API already advertises, so
         // the two cannot disagree about what fits: a file the API accepts is never refused by the
         // provider before a single byte has moved.
         maxObjectSizeBytes: config.limits.maxFileSizeBytes,
-        ...(config.telegram.maxPartSizeBytes === null
-          ? {}
-          : { maxPartSizeBytes: config.telegram.maxPartSizeBytes }),
+        ...(maxPartSizeBytes === null ? {} : { maxPartSizeBytes }),
+        // A self-hosted `--local` server can hold a whole object as one document, so stage the
+        // parts and send once at finalize: one document per file, up to the server's ceiling.
+        maxWholeObjectSizeBytes: Math.min(wholeObjectCeiling, config.limits.maxFileSizeBytes),
+        stagePartsToSingleDocument: localBotApi,
       });
       return {
         provider,

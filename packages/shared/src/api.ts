@@ -308,10 +308,13 @@ export const uploadPartResponseSchema = z.object({
  *
  * Mirrors the provider's `UploadSessionState`. `finalized` means the bytes are durable and the
  * object exists; `aborted`/`failed`/`expired` mean the staged bytes were (or will be) released.
+ * `processing` is API-level: the client has finished sending bytes and the server is still
+ * assembling/sending the object (see `completeUploadAcceptedSchema`).
  */
 export const uploadStateSchema = z.enum([
   'initiated',
   'in_progress',
+  'processing',
   'finalized',
   'aborted',
   'failed',
@@ -336,6 +339,20 @@ export const uploadStatusResponseSchema = z.object({
 
 export const completeUploadResponseSchema = z.object({
   file: fileRecordSchema,
+});
+
+/**
+ * Returned with `202` when finalization is still running in the background.
+ *
+ * Assembling a multi-gigabyte object as a single Telegram document takes minutes — longer than
+ * an edge proxy (Cloudflare's ~100 s limit) will hold a request open — so `POST .../complete`
+ * answers `202` and the client polls the same endpoint until it answers `200` with the file.
+ * The operation is idempotent: polling never starts a second send.
+ */
+export const completeUploadAcceptedSchema = z.object({
+  uploadId: z.string().regex(ID_PATTERN.upload),
+  fileId: z.string().regex(ID_PATTERN.file),
+  state: z.literal('processing'),
 });
 
 export const createShareRequestSchema = z.object({
@@ -438,6 +455,7 @@ export type LimitsResponse = z.infer<typeof limitsResponseSchema>;
 export type InitiateUploadRequest = z.infer<typeof initiateUploadRequestSchema>;
 export type InitiateUploadResponse = z.infer<typeof initiateUploadResponseSchema>;
 export type UploadStatusResponse = z.infer<typeof uploadStatusResponseSchema>;
+export type CompleteUploadAccepted = z.infer<typeof completeUploadAcceptedSchema>;
 export type CreateShareRequest = z.infer<typeof createShareRequestSchema>;
 export type ShareRecord = z.infer<typeof shareRecordSchema>;
 export type CreatedShareRecord = z.infer<typeof createdShareRecordSchema>;

@@ -729,3 +729,56 @@ the upload engine, and the `concurrency` group is what keeps the deployment sing
 **Guarded by:** `apps/api/src/dependencies.test.ts` (a wired client reports `ok` on a `PING`, a
 broken one reports `unavailable`, and because Redis is not `required` neither changes readiness).
 The live deployment reports `redis: ok` in `/readyz` with the round-trip time.
+
+## D38. The web app is deployed to Vercel from CI, as a finished static directory
+
+**Chosen:** `.github/workflows/web-host.yml` builds `@opendrive/web` inside CI and uploads the
+result to the existing Vercel project with `vercel deploy apps/web/dist --prod`. A committed
+`apps/web/vercel.json` carries the single-page-app rewrite. This supersedes D16 ("Vercel is a
+candidate, not a configuration"): the hosting phase D16 deferred to has arrived.
+
+**Why:** the web build imports `@opendrive/shared` through a Vite alias, so it cannot be built
+without the workspace installed first. Rather than teach Vercel a pnpm workspace — a second
+toolchain to keep in step with CI — the workflow builds with the same toolchain CI uses and hands
+Vercel a finished directory. Building in CI also means the deploy is one command an operator can
+reproduce, and the SPA rewrite is a reviewed file instead of dashboard state that lives nowhere.
+
+**Honest limits:** the browser talks to `https://api.opendrive.indevs.in` directly, so the web
+origin must be in `CORS_ORIGINS` and the API must be up for the app to be usable; a Vercel
+deployment with a down API serves the shell and fails every request. The `VITE_*` values are baked
+in at build time, so changing them needs a redeploy, not a restart. The Supabase anon key ships in
+the bundle by design; row-level security, not secrecy, is what protects data.
+
+**Guarded by:** the workflow itself (a failed build or deploy fails the job) and `CORS_ORIGINS`
+containing `https://opendrive.indevs.in` and `https://www.opendrive.indevs.in`.
+
+## D39. A large object is staged locally and sent as one Telegram document, finalized asynchronously
+
+**Chosen:** the Telegram provider gains a staged mode. When `TELEGRAM_API_BASE_URL` points at the
+loopback Local Bot API server (`--local`), `uploadPart` writes each part to a spool file instead of
+sending it, and `finalizeUpload` verifies the assembled length and whole-object checksum, then sends
+the reassembled object as a single `sendDocument`. Because that send can take minutes,
+`POST /uploads/:id/complete` runs finalization as a background job and answers `202` with
+`{ state: 'processing' }`; the client polls the same endpoint until it answers `200` with the file.
+Objects at or below 64 MiB still finalize inside the first request.
+
+**Why:** Cloudflare's edge rejects any single request body above 100 MiB on the public API hostname,
+so a multi-gigabyte file _arrives_ as many parts — but the whole point of running the Local Bot API
+server (`--local`) is that Telegram will hold a 2000 MB document, and one document per file is what
+a person expects to see in the chat. Sending each part as its own document (the previous behaviour)
+produced 21 separate files for a 2 GiB object. The async finalize exists because a synchronous send
+of that object outlives the edge proxy's ~100 s response timeout, which would surface as a `524`
+even though the send was succeeding.
+
+**Honest limits:** the spool is process-local disk, so a runner that ends mid-upload loses it — the
+same caveat as the in-process upload sessions (D31), and the reason the spool is deleted only after
+the object is committed (a failed send is retryable from the spool, but a lost runner is not). The
+64 MiB sync threshold is a time budget against the edge timeout, not a correctness boundary. A
+`202` means "poll", not "done", and a client that stops polling leaves the upload `processing` until
+the session TTL reclaims it.
+
+**Guarded by:** `apps/api/src/storage/providers/telegram.test.ts` (staged parts stay off Telegram
+until finalize, one document is sent, a failed send keeps the spool for a retry, and an object above
+the ceiling still uses multipart), `apps/api/src/storage/finalize-jobs.test.ts` (one attempt per
+upload, join-not-restart, retry after failure), and `apps/web/src/state/uploadQueue.retry.test.ts`
+plus the web client's `202` handling.

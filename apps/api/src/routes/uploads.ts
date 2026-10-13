@@ -4,6 +4,7 @@ import {
   UPLOAD_PART_CHECKSUM_HEADER,
   assertTransition,
   checkFileSize,
+  completeUploadAcceptedSchema,
   completeUploadResponseSchema,
   initiateUploadRequestSchema,
   initiateUploadResponseSchema,
@@ -24,10 +25,12 @@ import {
   requireScope,
 } from '../authz.js';
 import { toFileRecord } from '../db/mappers.js';
+import type { SqlExecutor } from '../db/client.js';
 import {
   applyFileTransition,
   countFilesCreatedSince,
   createFile,
+  findFileById,
   setDeletionTokenHash,
 } from '../db/repositories/files.js';
 import { findFolderById } from '../db/repositories/folders.js';
@@ -66,6 +69,14 @@ import type { UploadSessionRecord } from '../storage/upload-sessions.js';
  * reported as absent, exactly like one that never existed.
  */
 
+/**
+ * Finalize synchronously for objects up to this size. Assembling and sending a staged object to
+ * Telegram runs at a few MiB/s, so 64 MiB settles in roughly twenty seconds — comfortably inside an
+ * edge proxy's ~100 s request timeout — while a multi-gigabyte object would not. Above it, complete
+ * answers `202` and the client polls the same endpoint until it answers `200`.
+ */
+const SYNC_FINALIZE_MAX_BYTES = 64 * 1024 * 1024;
+
 const uploadParamsSchema = z.object({
   uploadId: z
     .string()
@@ -97,6 +108,22 @@ function inconsistentUploadState(): AppError {
     detail: 'The upload session and its file record disagreed about their state.',
     expose: false,
   });
+}
+
+/** Re-raises a background finalize failure, preserving a purposeful AppError as-is. */
+function finalizeFailure(error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  return new AppError('STORAGE_UNAVAILABLE', {
+    detail:
+      'Finalizing the upload failed; the staged bytes were kept and the upload may be retried.',
+  });
+}
+
+/** Reads a finalized file row for the response; a missing row is a server-side inconsistency. */
+async function readFinalizedFile(sql: SqlExecutor, fileId: string, ownerKey: string) {
+  const entity = await findFileById(sql, fileId, ownerKey);
+  if (entity === null) throw inconsistentUploadState();
+  return toFileRecord(entity);
 }
 
 export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
@@ -400,10 +427,13 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         description:
           'Finalizes the object: the provider assembles and verifies the staged parts, the locator ' +
           'is persisted, the quota hold is committed, and the file becomes servable. Idempotent — ' +
-          'a retried completion returns the same file.',
+          'a retried completion returns the same file. Large objects finalize in the background: ' +
+          'the first call answers `202` and the client polls this same endpoint until it answers ' +
+          '`200` with the file.',
         params: uploadParamsSchema,
         response: {
           200: completeUploadResponseSchema,
+          202: completeUploadAcceptedSchema,
           401: problemDetailsResponseSchema,
           404: problemDetailsResponseSchema,
           409: problemDetailsResponseSchema,
@@ -413,54 +443,86 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesWrite);
       const provider = requireStorageProvider(services.storage);
       const sql = services.db.requireSql();
       const ownerKey = ownerKeyOf(identity);
+      const uploadId = request.params.uploadId;
 
-      const view = services.uploadSessions.get(request.params.uploadId, ownerKey);
+      const view = services.uploadSessions.get(uploadId, ownerKey);
       if (view === null) throw notFoundUpload();
-      if (view.state !== 'initiated' && view.state !== 'in_progress') {
+
+      // A session that already ended cannot be completed again.
+      if (view.state === 'aborted' || view.state === 'failed' || view.state === 'expired') {
         throw conflictUpload(view.state);
       }
 
-      // A finalize that fails — missing parts, a checksum mismatch — is deliberately NOT terminal.
-      // The provider keeps the staged parts, so the client may send what is missing and retry, or
-      // abort to release the hold. Only an explicit abort ends the session, because only the client
-      // knows whether the upload is worth recovering; a hold left behind by a crash expires on its
-      // own. `finalizeUpload` is idempotent, so a retry after a partial failure is safe.
-      const stored = await provider.finalizeUpload(view.record.providerSession);
+      // Idempotent terminal case: a finalized session already has a servable file.
+      if (view.state === 'finalized') {
+        return { file: await readFinalizedFile(sql, view.record.fileId, ownerKey) };
+      }
 
-      await insertActiveStorageObject(sql, {
-        id: newId('storageObject'),
-        fileId: view.record.fileId,
-        ref: stored.ref,
+      // Second and later polls join the in-flight attempt instead of starting another send.
+      const job = services.finalizeJobs.status(uploadId);
+      if (job?.state === 'processing') {
+        return reply
+          .status(202)
+          .send({ uploadId, fileId: view.record.fileId, state: 'processing' as const });
+      }
+      // A finalize that failed — missing parts, a checksum mismatch, a transient storage error — is
+      // deliberately NOT terminal: the provider kept the staged bytes, so the client may send what
+      // is missing and retry here, or abort to release the hold. Only an explicit abort ends the
+      // session, because only the client knows whether the upload is worth recovering.
+      if (job?.state === 'failed') services.finalizeJobs.resetIfFailed(uploadId);
+
+      services.uploadSessions.markProcessing(uploadId);
+      const reservation = services.finalizeJobs.reserve(uploadId, async () => {
+        const stored = await provider.finalizeUpload(view.record.providerSession);
+
+        await insertActiveStorageObject(sql, {
+          id: newId('storageObject'),
+          fileId: view.record.fileId,
+          ref: stored.ref,
+        });
+        await commitReservation(sql, view.record.reservationId);
+
+        const scanningEnabled = config.limits.malwareScanEnabled;
+        const uploaded = await applyFileTransition(sql, {
+          fileId: view.record.fileId,
+          ownerKey,
+          from: 'uploading',
+          to: 'uploaded',
+        });
+        if (uploaded === null) throw inconsistentUploadState();
+
+        const target = scanningEnabled ? 'scanning' : 'ready';
+        assertTransition('uploaded', target, { scanningEnabled });
+        const finalized = await applyFileTransition(sql, {
+          fileId: view.record.fileId,
+          ownerKey,
+          from: 'uploaded',
+          to: target,
+          ...(scanningEnabled ? { scanState: 'pending' as const } : {}),
+        });
+        if (finalized === null) throw inconsistentUploadState();
+
+        services.uploadSessions.finish(uploadId, 'finalized');
       });
-      await commitReservation(sql, view.record.reservationId);
 
-      const scanningEnabled = config.limits.malwareScanEnabled;
-      const uploaded = await applyFileTransition(sql, {
-        fileId: view.record.fileId,
-        ownerKey,
-        from: 'uploading',
-        to: 'uploaded',
-      });
-      if (uploaded === null) throw inconsistentUploadState();
+      // Large objects outlast an edge proxy's request timeout, so hand back `202` and let the
+      // client poll. Small ones settle in seconds and stay a single round trip.
+      if (view.record.declaredSizeBytes > SYNC_FINALIZE_MAX_BYTES) {
+        return reply
+          .status(202)
+          .send({ uploadId, fileId: view.record.fileId, state: 'processing' as const });
+      }
 
-      const target = scanningEnabled ? 'scanning' : 'ready';
-      assertTransition('uploaded', target, { scanningEnabled });
-      const finalized = await applyFileTransition(sql, {
-        fileId: view.record.fileId,
-        ownerKey,
-        from: 'uploaded',
-        to: target,
-        ...(scanningEnabled ? { scanState: 'pending' as const } : {}),
-      });
-      if (finalized === null) throw inconsistentUploadState();
+      await reservation.settled;
+      const outcome = services.finalizeJobs.status(uploadId);
+      if (outcome?.state !== 'done') throw finalizeFailure(outcome?.error);
 
-      services.uploadSessions.finish(view.record.uploadId, 'finalized');
-      return { file: toFileRecord(finalized) };
+      return { file: await readFinalizedFile(sql, view.record.fileId, ownerKey) };
     },
   );
 
@@ -491,6 +553,10 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
 
       const view = services.uploadSessions.get(request.params.uploadId, ownerKey);
       if (view === null) throw notFoundUpload();
+
+      // Finalization is already running in the background; tearing the session down under it would
+      // race the send. The client should wait for it to settle instead.
+      if (view.state === 'processing') throw conflictUpload('processing');
 
       if (view.state === 'initiated' || view.state === 'in_progress') {
         await provider.abortUpload(view.record.providerSession, 'client_cancelled');

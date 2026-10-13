@@ -30,6 +30,13 @@ export type UploadSessionStateName = Extract<
   'initiated' | 'in_progress' | 'finalized' | 'aborted' | 'failed' | 'expired'
 >;
 
+/**
+ * API-level state, one step beyond the provider's. `processing` means the client has sent every
+ * byte and finalization (assembling a single document, then sending it) is running in the
+ * background; the upload is no longer taking parts, but it is not `finalized` yet.
+ */
+export type UploadProgressState = UploadSessionStateName | 'processing';
+
 export interface UploadSessionRecord {
   readonly uploadId: string;
   readonly fileId: string;
@@ -49,7 +56,7 @@ export interface UploadSessionRecord {
 }
 
 interface Progress {
-  state: UploadSessionStateName;
+  state: UploadProgressState;
   partsReceived: Set<number>;
 }
 
@@ -61,11 +68,11 @@ export interface UploadSessionStoreOptions {
 
 export interface UploadSessionView {
   readonly record: UploadSessionRecord;
-  readonly state: UploadSessionStateName;
+  readonly state: UploadProgressState;
   readonly partsReceived: readonly number[];
 }
 
-const OPEN_STATES: readonly UploadSessionStateName[] = ['initiated', 'in_progress'];
+const OPEN_STATES: readonly UploadProgressState[] = ['initiated', 'in_progress'];
 
 export class UploadSessionStore {
   private readonly records = new Map<string, UploadSessionRecord>();
@@ -114,6 +121,17 @@ export class UploadSessionStore {
     if (progress === undefined) return;
     progress.state = 'in_progress';
     progress.partsReceived.add(partNumber);
+  }
+
+  /**
+   * Marks the byte-transfer phase finished and the finalize phase started. Only meaningful while
+   * the session is open; a terminal state is never downgraded to `processing`.
+   */
+  markProcessing(uploadId: string): void {
+    const progress = this.progress.get(uploadId);
+    if (progress === undefined) return;
+    if (!OPEN_STATES.includes(progress.state)) return;
+    progress.state = 'processing';
   }
 
   /** Records a terminal state. The session remains readable until its TTL passes. */

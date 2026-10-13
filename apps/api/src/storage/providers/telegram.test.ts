@@ -6,6 +6,7 @@ import { newId, sha256HexOfBytes } from '@opendrive/shared';
 import type { ByteStream } from '@opendrive/shared';
 import { describeStorageProviderContract } from '@opendrive/shared/storage/testing';
 import { TelegramStorageProvider } from './telegram.js';
+import type { TelegramStorageProviderOptions } from './telegram.js';
 import {
   classifyApiError,
   TelegramApiError,
@@ -541,6 +542,152 @@ describe('Telegram storage provider', () => {
       }),
     ).rejects.toMatchObject({ code: 'PAYLOAD_TOO_LARGE' });
     expect(transport.messages.size).toBe(0);
+  });
+
+  describe('staged single-document delivery', () => {
+    function stagedProvider(
+      transport: FakeTelegramTransport,
+      extra: Partial<TelegramStorageProviderOptions> = {},
+    ): TelegramStorageProvider {
+      return new TelegramStorageProvider({
+        transport,
+        stagePartsToSingleDocument: true,
+        maxWholeObjectSizeBytes: 1024 * 1024,
+        ...extra,
+      });
+    }
+
+    it('keeps every part on local disk, then sends ONE document at finalize', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport);
+      const payload = new Uint8Array(4096);
+      for (let index = 0; index < payload.byteLength; index += 1) {
+        payload[index] = (index * 11) % 256;
+      }
+      const expected = await sha256HexOfBytes(payload);
+
+      const session = await provider.initiateUpload(uploadInput(payload.byteLength, 1024));
+      for (let partNumber = 1; partNumber <= 4; partNumber += 1) {
+        await provider.uploadPart(session, {
+          partNumber,
+          source: payload.subarray((partNumber - 1) * 1024, partNumber * 1024),
+          sizeBytes: 1024,
+        });
+      }
+
+      // Nothing has reached Telegram: the parts are spool files, not messages.
+      expect(transport.messages.size).toBe(0);
+      expect(transport.uploadAttempts).toBe(0);
+
+      const stored = await provider.finalizeUpload(session);
+
+      // Exactly one document, one send, and the object reads back byte-for-byte.
+      expect(transport.messages.size).toBe(1);
+      expect(transport.uploadAttempts).toBe(1);
+      expect(stored.checksumSha256).toBe(expected);
+      const read = await provider.openReadStream(stored.ref);
+      expect(read.length).toBe(payload.byteLength);
+      expect(await sha256HexOfBytes(await drain(read.stream))).toBe(expected);
+    });
+
+    it('keeps the spool when the single send fails, so finalize can be retried', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport, { uploadRetryDelayMs: 0 });
+      const payload = new Uint8Array(2048).fill(5);
+      const session = await provider.initiateUpload(uploadInput(payload.byteLength, 1024));
+      await provider.uploadPart(session, {
+        partNumber: 1,
+        source: payload.subarray(0, 1024),
+        sizeBytes: 1024,
+      });
+      await provider.uploadPart(session, {
+        partNumber: 2,
+        source: payload.subarray(1024),
+        sizeBytes: 1024,
+      });
+
+      transport.alwaysFailUploads = true;
+      await expect(provider.finalizeUpload(session)).rejects.toMatchObject({
+        code: 'STORAGE_UNAVAILABLE',
+      });
+      expect(transport.messages.size).toBe(0);
+
+      // The bytes stayed on disk: the retry succeeds without the client re-sending a byte.
+      transport.alwaysFailUploads = false;
+      const stored = await provider.finalizeUpload(session);
+      expect(stored.checksumSha256).toBe(await sha256HexOfBytes(payload));
+      expect(transport.messages.size).toBe(1);
+      // Idempotent: a third finalize must not send a second document.
+      await provider.finalizeUpload(session);
+      expect(transport.messages.size).toBe(1);
+    });
+
+    it('sends parts as separate documents above the single-document ceiling', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport, { maxWholeObjectSizeBytes: 1024 });
+      const session = await provider.initiateUpload(uploadInput(2048, 1024));
+      const part = new Uint8Array(1024).fill(9);
+      await provider.uploadPart(session, { partNumber: 1, source: part, sizeBytes: 1024 });
+      await provider.uploadPart(session, { partNumber: 2, source: part, sizeBytes: 1024 });
+      // Above the ceiling the provider keeps multipart delivery: one document per part.
+      expect(transport.messages.size).toBe(2);
+    });
+
+    it('refuses a duplicate part before it overwrites the staged copy', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport);
+      const session = await provider.initiateUpload(uploadInput(2048, 1024));
+      const part = new Uint8Array(1024).fill(1);
+      await provider.uploadPart(session, { partNumber: 1, source: part, sizeBytes: 1024 });
+      await expect(
+        provider.uploadPart(session, { partNumber: 1, source: part, sizeBytes: 1024 }),
+      ).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(transport.messages.size).toBe(0);
+    });
+
+    it('rejects a staged part whose checksum does not match, before anything is sent', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport);
+      const session = await provider.initiateUpload(uploadInput(1024, 1024));
+      await expect(
+        provider.uploadPart(session, {
+          partNumber: 1,
+          source: new Uint8Array(1024).fill(2),
+          sizeBytes: 1024,
+          checksumSha256: '0'.repeat(64),
+        }),
+      ).rejects.toMatchObject({ code: 'INTEGRITY_CHECK_FAILED' });
+      expect(transport.messages.size).toBe(0);
+      expect(transport.uploadAttempts).toBe(0);
+    });
+
+    it('refuses to finalize a staged upload with a missing part', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport);
+      const session = await provider.initiateUpload(uploadInput(2048, 1024));
+      await provider.uploadPart(session, {
+        partNumber: 1,
+        source: new Uint8Array(1024).fill(1),
+        sizeBytes: 1024,
+      });
+      await expect(provider.finalizeUpload(session)).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect(transport.messages.size).toBe(0);
+    });
+
+    it('releases the spool on abort without leaving a Telegram message', async () => {
+      const transport = new FakeTelegramTransport();
+      const provider = stagedProvider(transport);
+      const session = await provider.initiateUpload(uploadInput(2048, 1024));
+      await provider.uploadPart(session, {
+        partNumber: 1,
+        source: new Uint8Array(1024).fill(4),
+        sizeBytes: 1024,
+      });
+      await provider.abortUpload(session, 'client_cancelled');
+      expect(transport.messages.size).toBe(0);
+      // A finalize after abort is refused rather than reading a vanished spool.
+      await expect(provider.finalizeUpload(session)).rejects.toMatchObject({ code: 'CONFLICT' });
+    });
   });
 });
 

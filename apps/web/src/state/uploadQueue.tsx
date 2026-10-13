@@ -9,7 +9,8 @@ import {
   type ReactNode,
 } from 'react';
 import type { LimitsResponse } from '@opendrive/shared';
-import { describeFailure } from '../lib/api/errors.js';
+import { NetworkError, describeFailure, isApiError, isAuthFailure } from '../lib/api/errors.js';
+import type { ApiClient } from '../lib/api/client.js';
 import { useApi, useSession } from '../lib/auth/session.js';
 import { sha256HexOfBlob } from '../lib/upload/checksum.js';
 import { planForFile } from '../lib/upload/plan.js';
@@ -56,6 +57,71 @@ export interface UploadQueueValue {
 }
 
 const UploadQueueContext = createContext<UploadQueueValue | null>(null);
+
+/**
+ * How long to wait between finalize polls. A large object is assembled and sent on the server
+ * after the client's last part, so the client polls rather than holding one long request open.
+ */
+const FINALIZE_POLL_INTERVAL_MS = 3000;
+
+/** Waits `ms`, rejecting promptly if the operation was cancelled meanwhile. */
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Waits between finalize polls, rejecting promptly if the upload was cancelled meanwhile. */
+function waitForFinalize(signal: AbortSignal): Promise<void> {
+  return wait(FINALIZE_POLL_INTERVAL_MS, signal);
+}
+
+/** Statuses worth retrying: the edge answered, but the origin did not serve the part. */
+const RETRYABLE_PART_STATUSES = new Set([500, 502, 503, 504]);
+const PART_RETRY_ATTEMPTS = 3;
+const PART_RETRY_DELAY_MS = 1000;
+
+/**
+ * Sends one part, retrying a transient failure.
+ *
+ * A retry keeps the same part number. If the failed attempt actually stored the part — a response
+ * lost after the bytes landed — the server answers 409 (duplicate); that is treated as success,
+ * because re-sending an identical part is exactly the idempotent case and failing the whole upload
+ * over it would be worse. Every other failure (a refused size, a validation error) is final.
+ */
+export async function uploadPartWithRetry(
+  api: ApiClient,
+  params: Parameters<ApiClient['uploadPart']>[0],
+  signal: AbortSignal,
+  retryDelayMs: number = PART_RETRY_DELAY_MS,
+): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await api.uploadPart(params);
+      return;
+    } catch (error) {
+      if (signal.aborted || isAuthFailure(error)) throw error;
+      if (attempt > 1 && isApiError(error) && error.status === 409) return;
+      const transient =
+        error instanceof NetworkError ||
+        (isApiError(error) && RETRYABLE_PART_STATUSES.has(error.status));
+      if (!transient || attempt >= PART_RETRY_ATTEMPTS) throw error;
+      await wait(retryDelayMs, signal);
+    }
+  }
+}
 
 export function useUploadQueue(): UploadQueueValue {
   const value = useContext(UploadQueueContext);
@@ -166,22 +232,33 @@ export function UploadQueueProvider({
         for (const part of partsPlan.parts) {
           const blob = file.slice(part.start, part.end);
           const checksum = await sha256HexOfBlob(blob);
-          await api.uploadPart({
-            uploadId: initiated.uploadId,
-            partNumber: part.partNumber,
-            body: blob,
-            ...(checksum === undefined ? {} : { checksumSha256: checksum }),
-            signal: controller.signal,
-            onProgress: (sent) => {
-              patch(item.id, { uploadedBytes: uploadedBytes + sent });
+          await uploadPartWithRetry(
+            api,
+            {
+              uploadId: initiated.uploadId,
+              partNumber: part.partNumber,
+              body: blob,
+              ...(checksum === undefined ? {} : { checksumSha256: checksum }),
+              signal: controller.signal,
+              onProgress: (sent) => {
+                patch(item.id, { uploadedBytes: uploadedBytes + sent });
+              },
             },
-          });
+            controller.signal,
+          );
           uploadedBytes = part.end;
           patch(item.id, { uploadedBytes });
         }
 
         patch(item.id, { phase: 'finalizing' });
-        const completed = await api.completeUpload(initiated.uploadId, controller.signal);
+        let completed = await api.completeUpload(initiated.uploadId, controller.signal);
+        // A large object is assembled and sent on the server after the last part, so complete
+        // answers `processing` and the file appears a little later; poll until it is ready.
+        while (completed.status === 'processing') {
+          patch(item.id, { uploadId: completed.uploadId, fileId: completed.fileId });
+          await waitForFinalize(controller.signal);
+          completed = await api.completeUpload(completed.uploadId, controller.signal);
+        }
         patch(item.id, {
           phase: 'ready',
           fileId: completed.file.id,

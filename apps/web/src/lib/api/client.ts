@@ -4,6 +4,7 @@ import {
   UPLOAD_PART_CHECKSUM_HEADER,
   anonymousSessionResponseSchema,
   apiKeyPageSchema,
+  completeUploadAcceptedSchema,
   completeUploadResponseSchema,
   createdApiKeyRecordSchema,
   createdShareRecordSchema,
@@ -101,6 +102,17 @@ export interface RequestOptions {
   signal?: AbortSignal;
   headers?: Record<string, string>;
 }
+
+/**
+ * Outcome of finalizing an upload.
+ *
+ * `ready` carries the servable file. `processing` means the server is still assembling/sending the
+ * object in the background; the caller should poll `completeUpload` with the same upload id until
+ * it resolves `ready`.
+ */
+export type CompleteUploadOutcome =
+  | { status: 'ready'; file: FileRecord }
+  | { status: 'processing'; uploadId: string; fileId: string };
 
 export class ApiClient {
   readonly #credential: CredentialSource;
@@ -332,16 +344,48 @@ export class ApiClient {
     });
   }
 
-  completeUpload(uploadId: string, signal?: AbortSignal): Promise<{ file: FileRecord }> {
-    return this.request(
-      `${API_PREFIX}/uploads/${uploadId}/complete`,
-      completeUploadResponseSchema,
-      {
-        method: 'POST',
-        body: {},
-        ...(signal ? { signal } : {}),
-      },
-    );
+  /**
+   * Finalize an upload.
+   *
+   * Small objects finalize inside the request and answer `200` with the file. Large ones assemble
+   * and send in the background and answer `202`; the caller polls this same call until it answers
+   * `200`. The operation is idempotent, so polling never starts a second send.
+   */
+  async completeUpload(uploadId: string, signal?: AbortSignal): Promise<CompleteUploadOutcome> {
+    const response = await this.#send(`${API_PREFIX}/uploads/${uploadId}/complete`, {
+      method: 'POST',
+      body: {},
+      ...(signal ? { signal } : {}),
+    });
+    const payload = await readJson(response);
+    if (response.status === 202) {
+      const accepted = completeUploadAcceptedSchema.safeParse(payload);
+      if (!accepted.success) {
+        throw new ContractError(
+          response.status,
+          'The accepted response does not match the published contract.',
+        );
+      }
+      return {
+        status: 'processing',
+        uploadId: accepted.data.uploadId,
+        fileId: accepted.data.fileId,
+      };
+    }
+    if (response.status === 401) {
+      this.#onAuthFailure?.();
+    }
+    if (!response.ok) {
+      throw problemFrom(response.status, payload);
+    }
+    const parsed = completeUploadResponseSchema.safeParse(payload);
+    if (!parsed.success) {
+      throw new ContractError(
+        response.status,
+        parsed.error.issues[0]?.message ?? 'The response does not match the published contract.',
+      );
+    }
+    return { status: 'ready', file: parsed.data.file };
   }
 
   abortUpload(uploadId: string, signal?: AbortSignal): Promise<void> {

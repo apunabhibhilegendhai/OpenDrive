@@ -9,6 +9,7 @@ import { createRedisConnection } from './redis.js';
 import type { RedisConnection } from './redis.js';
 import { resolveStorageProvider } from './storage/registry.js';
 import type { StorageResolution } from './storage/registry.js';
+import { FinalizeJobStore } from './storage/finalize-jobs.js';
 import { UploadSessionStore } from './storage/upload-sessions.js';
 
 /**
@@ -30,6 +31,11 @@ export interface AppServices {
   readonly redis: RedisConnection | null;
   /** Open upload sessions. Process-local by design; see docs/DECISIONS.md (D31, D33). */
   readonly uploadSessions: UploadSessionStore;
+  /**
+   * Background finalize jobs for large uploads. Process-local, for the same reason the session
+   * record is: the staged bytes live in this process.
+   */
+  readonly finalizeJobs: FinalizeJobStore;
 }
 
 export interface CreateServicesOptions {
@@ -44,6 +50,8 @@ export interface CreateServicesOptions {
   readonly redis?: RedisConnection | null;
   /** Injected by tests that need to exercise expiry without waiting for it. */
   readonly uploadSessions?: UploadSessionStore;
+  /** Injected by tests that need to observe a finalize job. */
+  readonly finalizeJobs?: FinalizeJobStore;
 }
 
 export function createServices(
@@ -62,5 +70,6 @@ export function createServices(
       new UploadSessionStore({
         maxActiveSessionsPerPrincipal: config.uploads.maxActiveSessionsPerPrincipal,
       }),
+    finalizeJobs: options.finalizeJobs ?? new FinalizeJobStore(),
   };
 }
