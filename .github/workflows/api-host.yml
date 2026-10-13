@@ -34,9 +34,14 @@ on:
         required: false
         default: '300'
   schedule:
-    # Every four hours. A run lasts five and `concurrency` queues the next one behind it, so the
-    # API stays up without a manual dispatch; the spare hour absorbs scheduler delay.
-    - cron: '0 */4 * * *'
+    # Hourly, deliberately off the top of the hour (minute 17). The `schedule` event is best-effort
+    # and GitHub drops runs at `:00` under load; the old `0 */4 * * *` slot left the API down for
+    # hours whenever a slot was dropped. A run lasts five hours and `concurrency` keeps exactly one
+    # replacement queued, so an hourly cron means a run is (almost) always waiting to take over: a
+    # dropped slot costs at most an hour, and an early failure is replaced within the hour rather
+    # than waiting for the next four-hourly slot. The extra queued runs cost nothing — each is
+    # cancelled by the next until the running one ends.
+    - cron: '17 * * * *'
 
 permissions:
   contents: read
