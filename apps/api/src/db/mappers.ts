@@ -34,9 +34,10 @@ export function toFileRecord(entity: FileEntity): FileRecord {
     // The DB column is nullable text; it may be NULL or an empty string. The wire contract
     // requires either a non-empty string or null (z.string().min(1).nullable()), so normalize
     // empty strings to null to satisfy the schema.
-    detectedMimeType: entity.detectedMimeType && entity.detectedMimeType.length > 0
-      ? entity.detectedMimeType
-      : null,
+    detectedMimeType:
+      entity.detectedMimeType && entity.detectedMimeType.length > 0
+        ? entity.detectedMimeType
+        : null,
     visibility: entity.visibility,
     status: entity.state,
     // The column is nullable and a file that no scanner has touched stores NULL; the published
@@ -46,9 +47,8 @@ export function toFileRecord(entity: FileEntity): FileRecord {
     scanState: entity.scanState ?? 'not_scanned',
     // checksumSha256 is nullable and must be a valid 64-char hex string if present.
     // Normalize empty strings to null to satisfy the schema.
-    checksumSha256: entity.checksumSha256 && entity.checksumSha256.length > 0
-      ? entity.checksumSha256
-      : null,
+    checksumSha256:
+      entity.checksumSha256 && entity.checksumSha256.length > 0 ? entity.checksumSha256 : null,
     createdAt: entity.createdAt.toISOString(),
     updatedAt: entity.updatedAt.toISOString(),
     expiresAt: entity.expiresAt === null ? null : entity.expiresAt.toISOString(),
