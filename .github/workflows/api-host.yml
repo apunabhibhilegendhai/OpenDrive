@@ -25,6 +25,7 @@
 # Hosting a multi-hour server on Actions is something GitHub's Acceptable Use Policies restrict;
 # treat a run here as a development deployment, not a home for real user data.
 name: API host (Cloudflare Tunnel)
+run-name: API host${{ github.event.inputs.triggered_by == 'workflow-watchman' && ' (watchman)' || github.event.inputs.triggered_by == 'self-chain' && ' (chain)' || '' }}
 
 on:
   workflow_dispatch:
@@ -33,6 +34,13 @@ on:
         description: 'How long to keep the API and tunnel up (5–330).'
         required: false
         default: '300'
+      # Source label, echoed in run-name. Declared because the workflow-watchman
+      # worker dispatches with inputs { triggered_by: 'workflow-watchman' } — an
+      # undeclared input makes GitHub reject the dispatch with HTTP 422.
+      triggered_by:
+        description: 'Source of the trigger (workflow-watchman auto-restart / self-chain)'
+        required: false
+        default: ''
   schedule:
     # Hourly, deliberately off the top of the hour (minute 17). The `schedule` event is best-effort
     # and GitHub drops runs at `:00` under load; the old `0 */4 * * *` slot left the API down for
@@ -439,7 +447,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/api-host.yml/dispatches" \
-            -d '{"ref":"main"}')
+            -d '{"ref":"main","inputs":{"triggered_by":"self-chain"}}')
           echo "  dispatch HTTP ${CODE}"
           if [ "$CODE" != "204" ]; then
             echo "::warning::self-chain dispatch failed (HTTP ${CODE}); the hourly schedule will have to restart"
