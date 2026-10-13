@@ -104,8 +104,12 @@ jobs:
       # runs when the job succeeds — so a run that failed its readiness gate discarded the ~20-minute
       # build and made every later run pay for it again. Saving in its own step, immediately after a
       # successful build and BEFORE the serving step, means the artefact survives a failed run.
+      # Gated on the same condition as the build: when TELEGRAM_API_BASE_URL points at the
+      # public API there is nothing to build, nothing to save, and nothing to restore — an
+      # ungated restore just logs a confusing "Cache not found" for a key that can never exist.
       - name: Restore the Local Bot API server build
         id: botapi-cache
+        if: env.NEEDS_LOCAL_BOT_API == 'true'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/tg-bot-api
