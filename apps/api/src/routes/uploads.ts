@@ -473,8 +473,13 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       // A finalize that failed — missing parts, a checksum mismatch, a transient storage error — is
       // deliberately NOT terminal: the provider kept the staged bytes, so the client may send what
       // is missing and retry here, or abort to release the hold. Only an explicit abort ends the
-      // session, because only the client knows whether the upload is worth recovering.
-      if (job?.state === 'failed') services.finalizeJobs.resetIfFailed(uploadId);
+      // session, because only the client knows whether the upload is worth recovering. Reopen the
+      // session first: while it still read `processing`, sending the missing part would be refused.
+      if (job?.state === 'failed') {
+        services.finalizeJobs.resetIfFailed(uploadId);
+        services.uploadSessions.reopen(uploadId);
+        throw finalizeFailure(job.error);
+      }
 
       services.uploadSessions.markProcessing(uploadId);
       const reservation = services.finalizeJobs.reserve(uploadId, async () => {
@@ -520,7 +525,14 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
 
       await reservation.settled;
       const outcome = services.finalizeJobs.status(uploadId);
-      if (outcome?.state !== 'done') throw finalizeFailure(outcome?.error);
+      if (outcome?.state !== 'done') {
+        // The failure has been reported to this caller, so drop the stale record: the provider kept
+        // the staged bytes, and the next call must be free to start a fresh attempt after the
+        // client sends whatever was missing. Reopen first so that part is actually accepted.
+        services.finalizeJobs.resetIfFailed(uploadId);
+        services.uploadSessions.reopen(uploadId);
+        throw finalizeFailure(outcome?.error);
+      }
 
       return { file: await readFinalizedFile(sql, view.record.fileId, ownerKey) };
     },

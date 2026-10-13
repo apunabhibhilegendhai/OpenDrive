@@ -134,6 +134,21 @@ export class UploadSessionStore {
     progress.state = 'processing';
   }
 
+  /**
+   * Returns a session to the byte-transfer phase after a finalize attempt failed.
+   *
+   * `processing` is only true while a finalize is in flight. When one fails the provider still holds
+   * the staged bytes — a missing part may simply not have arrived — so the client must be able to
+   * send more before retrying. The state is recomputed from the parts actually received, never
+   * remembered from before: it cannot claim progress the provider does not have.
+   */
+  reopen(uploadId: string): void {
+    const progress = this.progress.get(uploadId);
+    if (progress === undefined) return;
+    if (progress.state !== 'processing') return;
+    progress.state = progress.partsReceived.size === 0 ? 'initiated' : 'in_progress';
+  }
+
   /** Records a terminal state. The session remains readable until its TTL passes. */
   finish(uploadId: string, state: 'finalized' | 'aborted' | 'failed'): void {
     const progress = this.progress.get(uploadId);

@@ -163,4 +163,62 @@ describe('UploadSessionStore', () => {
     expect(store.get(uploadId, ownerKey)).toBeNull();
     expect(store.activeCountFor(ownerKey)).toBe(0);
   });
+
+  it('reopens a failed finalize to initiated when no part arrived', () => {
+    const store = new UploadSessionStore({
+      maxActiveSessionsPerPrincipal: 1,
+      now: () => FIXED_NOW,
+    });
+    const ownerKey = UploadSessionStore.ownerKeyFor(USER);
+    const uploadId = 'upl_0123456789012345678901234a';
+    store.create(record(uploadId, USER));
+
+    store.markProcessing(uploadId);
+    expect(store.get(uploadId, ownerKey)?.state).toBe('processing');
+
+    store.reopen(uploadId);
+    // Back to an open state, so the missing part is accepted instead of refused as out of order.
+    expect(store.get(uploadId, ownerKey)?.state).toBe('initiated');
+    expect(store.activeCountFor(ownerKey)).toBe(1);
+  });
+
+  it('reopens a failed finalize to in_progress when parts already arrived', () => {
+    const store = new UploadSessionStore({
+      maxActiveSessionsPerPrincipal: 1,
+      now: () => FIXED_NOW,
+    });
+    const ownerKey = UploadSessionStore.ownerKeyFor(USER);
+    const uploadId = 'upl_0123456789012345678901234a';
+    store.create(record(uploadId, USER));
+    store.markPartReceived(uploadId, 1);
+    store.markProcessing(uploadId);
+
+    store.reopen(uploadId);
+    // Recomputed from the parts actually received, never remembered: 1 part means in_progress.
+    expect(store.get(uploadId, ownerKey)?.state).toBe('in_progress');
+  });
+
+  it('never reopens a terminal session', () => {
+    const store = new UploadSessionStore({
+      maxActiveSessionsPerPrincipal: 1,
+      now: () => FIXED_NOW,
+    });
+    const ownerKey = UploadSessionStore.ownerKeyFor(USER);
+    const uploadId = 'upl_0123456789012345678901234a';
+    store.create(record(uploadId, USER));
+    store.markProcessing(uploadId);
+    store.finish(uploadId, 'finalized');
+
+    store.reopen(uploadId);
+    expect(store.get(uploadId, ownerKey)?.state).toBe('finalized');
+    expect(store.activeCountFor(ownerKey)).toBe(0);
+  });
+
+  it('reopen on an unknown session is a no-op', () => {
+    const store = new UploadSessionStore({
+      maxActiveSessionsPerPrincipal: 1,
+      now: () => FIXED_NOW,
+    });
+    expect(() => store.reopen('upl_0123456789012345678901234a')).not.toThrow();
+  });
 });
