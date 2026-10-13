@@ -45,6 +45,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # re-dispatch the next session in the end-of-run self-chain
 
 concurrency:
   group: api-host
@@ -146,6 +147,7 @@ jobs:
           key: telegram-bot-api-${{ runner.os }}-${{ env.BOT_API_COMMIT }}
 
       - name: Serve the API through the tunnel
+        id: serve
         env:
           NODE_ENV: production
           API_HOST: 127.0.0.1
@@ -411,3 +413,37 @@ jobs:
           tail -n 50 redis-tunnel.log 2>/dev/null || echo "(no redis-tunnel.log)"
           echo "===== botapi.log (tail) ====="
           tail -n 50 botapi.log 2>/dev/null || echo "(no botapi.log)"
+
+      #  Chain the next session 
+      # The `schedule` trigger has never fired for this repo (0 event=schedule
+      # runs), so nothing has restarted the API when a session ends — it has
+      # been going down silently and staying down. Close the chain locally: the
+      # run re-dispatches itself as its last act. `workflow_dispatch` is the
+      # documented exception to the "GITHUB_TOKEN-triggered events do not create
+      # runs" rule, and this job now declares `actions: write` for it.
+      #
+      # Only a *successful* serve chains. The serve step fails only in the
+      # up-front pre-flight (an unreachable DATABASE_URL / bad tunnel), and a
+      # failure there must NOT relaunch — that would be a ~5-minute crash loop.
+      # A cancelled run is left alone too (that is how an operator stops it).
+      # The hourly schedule stays as the backstop for those cases.
+      - name: Chain the next session
+        if: ${{ always() && !cancelled() && steps.serve.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          echo "  Chaining next session (serve outcome: ${{ steps.serve.outcome }})"
+          CODE=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/api-host.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "  dispatch HTTP ${CODE}"
+          if [ "$CODE" != "204" ]; then
+            echo "::warning::self-chain dispatch failed (HTTP ${CODE}); the hourly schedule will have to restart"
+            cat /tmp/dispatch.out 2>/dev/null || true
+          else
+            echo "  next session queued"
+          fi
