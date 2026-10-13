@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install pnpm (version comes from package.json packageManager)
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           run_install: false
 
@@ -110,7 +110,7 @@ jobs:
       - name: Restore the Local Bot API server build
         id: botapi-cache
         if: env.NEEDS_LOCAL_BOT_API == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/tg-bot-api
           key: telegram-bot-api-${{ runner.os }}-${{ env.BOT_API_COMMIT }}
@@ -135,7 +135,7 @@ jobs:
 
       - name: Save the Local Bot API server build
         if: env.NEEDS_LOCAL_BOT_API == 'true' && steps.botapi-cache.outputs.cache-hit != 'true' && steps.botapi-build.outcome == 'success'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/tg-bot-api
           key: telegram-bot-api-${{ runner.os }}-${{ env.BOT_API_COMMIT }}
