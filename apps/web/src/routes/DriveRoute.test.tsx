@@ -143,7 +143,7 @@ describe('listing and navigation', () => {
     });
 
     expect(screen.queryByText('chart.png')).toBeNull();
-    expect(screen.getByText('log.txt')).toBeTruthy();
+    await screen.findByText('log.txt');
     expect(screen.getByText(/1 of 2/)).toBeTruthy();
 
     fireEvent.change(screen.getByPlaceholderText('Filter this page…'), {
