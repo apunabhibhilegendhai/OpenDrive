@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { API_PREFIX } from '@opendrive/shared';
-import { ApiClient } from './client.js';
+import { ApiClient, PART_IDLE_TIMEOUT_MS } from './client.js';
 import { ApiError, ContractError, NetworkError } from './errors.js';
 import {
   createFakeServer,
@@ -8,6 +8,7 @@ import {
   defaultRoutes,
   fileFixture,
   problem,
+  type FakeResponse,
   type FakeRoute,
   type FakeServer,
 } from '../../test/fakeServer.js';
@@ -272,6 +273,38 @@ describe('ApiClient upload parts', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(server.calls).toHaveLength(0);
   });
+
+  it('aborts a part that stops moving, so the caller can retry it', async () => {
+    vi.useFakeTimers();
+    try {
+      let release: ((response: FakeResponse) => void) | undefined;
+      const server = createFakeServer([
+        partRoute(
+          () =>
+            new Promise<FakeResponse>((resolve) => {
+              release = resolve;
+            }),
+        ),
+      ]);
+      const client = new ApiClient({
+        credential: { token: () => 'token' },
+        baseUrl: '',
+        fetchImpl: server.fetch,
+        xhrFactory: createFakeXhr(server.handleAsync),
+      });
+
+      const outcome = client
+        .uploadPart({ uploadId: UPLOAD_ID, partNumber: 1, body: new Blob(['x']) })
+        .catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(PART_IDLE_TIMEOUT_MS);
+      await expect(outcome).resolves.toBeInstanceOf(NetworkError);
+
+      release?.({ status: 200, body: { partNumber: 1, receivedBytes: 1 } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('ApiClient upload completion', () => {
@@ -319,6 +352,13 @@ describe('ApiClient upload completion', () => {
     const { client } = clientFor(server, { token: 'token' });
 
     await expect(client.completeUpload(UPLOAD_ID)).rejects.toBeInstanceOf(ContractError);
+  });
+
+  it('treats an empty completion body as a transient failure, not a contract error', async () => {
+    const server = createFakeServer([completeRoute(() => ({ status: 200, text: '' }))]);
+    const { client } = clientFor(server, { token: 'token' });
+
+    await expect(client.completeUpload(UPLOAD_ID)).rejects.toBeInstanceOf(NetworkError);
   });
 
   it('surfaces a failed completion as the API problem', async () => {

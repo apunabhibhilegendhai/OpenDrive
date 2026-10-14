@@ -76,6 +76,15 @@ const configuredBaseUrl: unknown = import.meta.env.VITE_API_BASE_URL;
 export const API_BASE_URL: string =
   typeof configuredBaseUrl === 'string' ? configuredBaseUrl.replace(/\/+$/, '') : '';
 
+/**
+ * How long a part may go without moving a byte before it counts as stalled.
+ *
+ * A dropped edge connection can leave an XMLHttpRequest waiting forever, which is exactly the
+ * "stuck at 100%" someone sees when the last part never answers. Aborting and retrying the same
+ * part is safe: a part already stored answers `409`, which the upload queue treats as success.
+ */
+export const PART_IDLE_TIMEOUT_MS = 120_000;
+
 export interface ApiClientOptions {
   credential: CredentialSource;
   baseUrl?: string;
@@ -359,6 +368,11 @@ export class ApiClient {
     });
     const payload = await readJson(response);
     if (response.status === 202) {
+      // An empty body is a truncated/lost response, not a contract drift; the call is idempotent,
+      // so the caller can safely poll again rather than failing an upload whose bytes all landed.
+      if (payload === undefined) {
+        throw new NetworkError('The finalize response was empty; retrying.');
+      }
       const accepted = completeUploadAcceptedSchema.safeParse(payload);
       if (!accepted.success) {
         throw new ContractError(
@@ -377,6 +391,9 @@ export class ApiClient {
     }
     if (!response.ok) {
       throw problemFrom(response.status, payload);
+    }
+    if (payload === undefined) {
+      throw new NetworkError('The finalize response was empty; retrying.');
     }
     const parsed = completeUploadResponseSchema.safeParse(payload);
     if (!parsed.success) {
@@ -422,6 +439,23 @@ export class ApiClient {
         request.setRequestHeader(UPLOAD_PART_CHECKSUM_HEADER, input.checksumSha256);
       }
 
+      // A stall guard: every sign of movement re-arms it, and silence past the window aborts the
+      // request as a retryable failure. Without it a dropped connection waits forever.
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearIdle = (): void => {
+        if (idleTimer !== undefined) {
+          clearTimeout(idleTimer);
+          idleTimer = undefined;
+        }
+      };
+      const armIdle = (): void => {
+        clearIdle();
+        idleTimer = setTimeout(() => {
+          reject(new NetworkError('The part upload stalled before the server answered.'));
+          request.abort();
+        }, PART_IDLE_TIMEOUT_MS);
+      };
+
       const onAbort = () => request.abort();
       if (input.signal !== undefined) {
         if (input.signal.aborted) {
@@ -431,13 +465,17 @@ export class ApiClient {
         input.signal.addEventListener('abort', onAbort, { once: true });
       }
 
-      if (input.onProgress !== undefined) {
-        request.upload.addEventListener('progress', (event) => {
-          if (event.lengthComputable) input.onProgress?.(event.loaded, event.total);
-        });
-      }
+      request.upload.addEventListener('progress', (event) => {
+        armIdle();
+        if (event.lengthComputable) input.onProgress?.(event.loaded, event.total);
+      });
+      // Once the body is on the wire the server still has to answer; keep the guard armed.
+      request.upload.addEventListener('load', () => armIdle());
 
-      const cleanup = () => input.signal?.removeEventListener('abort', onAbort);
+      const cleanup = () => {
+        clearIdle();
+        input.signal?.removeEventListener('abort', onAbort);
+      };
 
       request.addEventListener('load', () => {
         cleanup();
@@ -467,6 +505,8 @@ export class ApiClient {
         reject(new DOMException('Aborted', 'AbortError'));
       });
 
+      // Arm before the first byte: a connection that never even starts must not wait forever.
+      armIdle();
       request.send(input.body);
     });
   }

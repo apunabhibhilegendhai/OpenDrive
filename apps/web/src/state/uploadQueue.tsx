@@ -10,7 +10,7 @@ import {
 } from 'react';
 import type { LimitsResponse } from '@opendrive/shared';
 import { NetworkError, describeFailure, isApiError, isAuthFailure } from '../lib/api/errors.js';
-import type { ApiClient } from '../lib/api/client.js';
+import type { ApiClient, CompleteUploadOutcome } from '../lib/api/client.js';
 import { useApi, useSession } from '../lib/auth/session.js';
 import { sha256HexOfBlob } from '../lib/upload/checksum.js';
 import { planForFile } from '../lib/upload/plan.js';
@@ -24,8 +24,9 @@ import { planForFile } from '../lib/upload/plan.js';
  *     There is no easing, no interpolation and no advance past what was sent.
  *   * `ready` is only ever set after `POST /uploads/:id/complete` answers, because that is the
  *     point at which the object exists. Before that the state is `finalizing`.
- *   * `failed` and `aborted` say which happened and why; nothing is silently retried, because
- *     the API has no idempotency contract for a completed upload.
+ *   * `failed` and `aborted` say which happened and why. A part send and the finalize call are
+ *     both idempotent, so those are retried through a transient edge failure — but nothing is
+ *     retried blindly, and an upload never advances past bytes the server has not accepted.
  *
  * Aborting calls the real `DELETE /uploads/:id`; if that call fails, the item says so instead
  * of pretending the upload was cancelled cleanly.
@@ -90,8 +91,38 @@ function waitForFinalize(signal: AbortSignal): Promise<void> {
 
 /** Statuses worth retrying: the edge answered, but the origin did not serve the part. */
 const RETRYABLE_PART_STATUSES = new Set([500, 502, 503, 504]);
-const PART_RETRY_ATTEMPTS = 3;
-const PART_RETRY_DELAY_MS = 1000;
+
+/**
+ * Attempts per part, including the first send.
+ *
+ * A big file is many sequential long requests, so the chance that one of them meets a transient
+ * edge blip grows with the size. A handful of retries with backoff turns "the upload died at part
+ * five" into a couple of extra seconds.
+ */
+export const PART_RETRY_ATTEMPTS = 6;
+const PART_RETRY_BASE_DELAY_MS = 1000;
+const PART_RETRY_MAX_DELAY_MS = 15_000;
+
+/** Rounds over the part list: a part that exhausts its retries resumes from server progress. */
+const MAX_PART_ROUNDS = 3;
+
+/** Attempts for a finalize poll, which is idempotent and therefore always safe to repeat. */
+export const FINALIZE_RETRY_ATTEMPTS = 6;
+
+/** Exponential backoff with jitter, so a recovering origin is not hammered in lockstep. */
+function retryDelay(baseMs: number, attempt: number): number {
+  if (baseMs <= 0) return 0;
+  const grown = Math.min(baseMs * 2 ** (attempt - 1), PART_RETRY_MAX_DELAY_MS);
+  return Math.round(grown * (0.7 + Math.random() * 0.6));
+}
+
+/** A failure that re-sending the same, identical request can recover from. */
+function isTransientFailure(error: unknown): boolean {
+  return (
+    error instanceof NetworkError ||
+    (isApiError(error) && (RETRYABLE_PART_STATUSES.has(error.status) || error.status === 429))
+  );
+}
 
 /**
  * Sends one part, retrying a transient failure.
@@ -105,7 +136,7 @@ export async function uploadPartWithRetry(
   api: ApiClient,
   params: Parameters<ApiClient['uploadPart']>[0],
   signal: AbortSignal,
-  retryDelayMs: number = PART_RETRY_DELAY_MS,
+  retryBaseDelayMs: number = PART_RETRY_BASE_DELAY_MS,
 ): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -114,11 +145,31 @@ export async function uploadPartWithRetry(
     } catch (error) {
       if (signal.aborted || isAuthFailure(error)) throw error;
       if (attempt > 1 && isApiError(error) && error.status === 409) return;
-      const transient =
-        error instanceof NetworkError ||
-        (isApiError(error) && RETRYABLE_PART_STATUSES.has(error.status));
-      if (!transient || attempt >= PART_RETRY_ATTEMPTS) throw error;
-      await wait(retryDelayMs, signal);
+      if (!isTransientFailure(error) || attempt >= PART_RETRY_ATTEMPTS) throw error;
+      await wait(retryDelay(retryBaseDelayMs, attempt), signal);
+    }
+  }
+}
+
+/**
+ * Finalizes an upload, tolerating a transient failure on the way.
+ *
+ * `POST .../complete` is idempotent, so a lost response or a momentary 5xx must not fail an upload
+ * whose bytes are already all on disk server-side. The queue calls this on every finalize poll.
+ */
+export async function completeUploadWithRetry(
+  api: ApiClient,
+  uploadId: string,
+  signal: AbortSignal,
+  retryBaseDelayMs: number = PART_RETRY_BASE_DELAY_MS,
+): Promise<CompleteUploadOutcome> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await api.completeUpload(uploadId, signal);
+    } catch (error) {
+      if (signal.aborted || isAuthFailure(error)) throw error;
+      if (!isTransientFailure(error) || attempt >= FINALIZE_RETRY_ATTEMPTS) throw error;
+      await wait(retryDelay(retryBaseDelayMs, attempt), signal);
     }
   }
 }
@@ -229,35 +280,65 @@ export function UploadQueueProvider({
         }
 
         let uploadedBytes = 0;
-        for (const part of partsPlan.parts) {
-          const blob = file.slice(part.start, part.end);
-          const checksum = await sha256HexOfBlob(blob);
-          await uploadPartWithRetry(
-            api,
-            {
-              uploadId: initiated.uploadId,
-              partNumber: part.partNumber,
-              body: blob,
-              ...(checksum === undefined ? {} : { checksumSha256: checksum }),
-              signal: controller.signal,
-              onProgress: (sent) => {
-                patch(item.id, { uploadedBytes: uploadedBytes + sent });
-              },
-            },
-            controller.signal,
-          );
-          uploadedBytes = part.end;
-          patch(item.id, { uploadedBytes });
+        const receivedParts = new Set<number>();
+        // The inner loop sends the missing parts once. If a part uses up every retry, the outer
+        // round resumes from what the server actually holds instead of failing the whole upload.
+        for (let round = 1; ; round += 1) {
+          let failedPart: Error | undefined;
+          for (const part of partsPlan.parts) {
+            if (receivedParts.has(part.partNumber)) continue;
+            const blob = file.slice(part.start, part.end);
+            const checksum = await sha256HexOfBlob(blob);
+            try {
+              await uploadPartWithRetry(
+                api,
+                {
+                  uploadId: initiated.uploadId,
+                  partNumber: part.partNumber,
+                  body: blob,
+                  ...(checksum === undefined ? {} : { checksumSha256: checksum }),
+                  signal: controller.signal,
+                  onProgress: (sent) => {
+                    patch(item.id, { uploadedBytes: uploadedBytes + sent });
+                  },
+                },
+                controller.signal,
+              );
+            } catch (error) {
+              failedPart = error instanceof Error ? error : new Error(String(error));
+              break;
+            }
+            receivedParts.add(part.partNumber);
+            uploadedBytes = part.end;
+            patch(item.id, { uploadedBytes });
+          }
+          if (failedPart === undefined) break;
+          if (round >= MAX_PART_ROUNDS || controller.signal.aborted || isAuthFailure(failedPart)) {
+            throw failedPart;
+          }
+          // Ask the server how far it actually got, keep those parts, pause for the edge to
+          // recover, then resume only the ones still missing.
+          const progress = await api
+            .uploadStatus(initiated.uploadId, controller.signal)
+            .catch(() => null);
+          if (progress !== null) {
+            for (const part of partsPlan.parts) {
+              if (part.partNumber <= progress.partsReceived) receivedParts.add(part.partNumber);
+            }
+            uploadedBytes = partsPlan.parts[progress.partsReceived - 1]?.end ?? uploadedBytes;
+            patch(item.id, { uploadedBytes });
+          }
+          await wait(retryDelay(PART_RETRY_BASE_DELAY_MS, PART_RETRY_ATTEMPTS), controller.signal);
         }
 
         patch(item.id, { phase: 'finalizing' });
-        let completed = await api.completeUpload(initiated.uploadId, controller.signal);
+        let completed = await completeUploadWithRetry(api, initiated.uploadId, controller.signal);
         // A large object is assembled and sent on the server after the last part, so complete
         // answers `processing` and the file appears a little later; poll until it is ready.
         while (completed.status === 'processing') {
           patch(item.id, { uploadId: completed.uploadId, fileId: completed.fileId });
           await waitForFinalize(controller.signal);
-          completed = await api.completeUpload(completed.uploadId, controller.signal);
+          completed = await completeUploadWithRetry(api, completed.uploadId, controller.signal);
         }
         patch(item.id, {
           phase: 'ready',
