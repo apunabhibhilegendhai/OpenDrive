@@ -147,9 +147,9 @@ export function SharesRoute() {
           created on another machine cannot be enumerated from this one.
         </p>
         <p className="sharepanel__copy">
-          <strong>Also not available:</strong> a share landing page. No route serves
-          <span className="mono"> /s/:token</span> yet, so following a link in a browser is not a
-          working download path in this deployment.
+          A link opens a public landing page at <span className="mono">/s/:token</span> where the
+          recipient can preview the file and download it. Opening that page is what counts against
+          the link's download limit.
         </p>
       </section>
 

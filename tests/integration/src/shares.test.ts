@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { bearer, createAccount, createFileFixture, createHarness, digest } from './harness.js';
+import type { FileRecord } from '@opendrive/shared';
+import {
+  bearer,
+  createAccount,
+  createFileFixture,
+  createHarness,
+  digest,
+  memoryStorage,
+} from './harness.js';
 import type { Harness } from './harness.js';
 
 /**
@@ -12,13 +20,17 @@ import type { Harness } from './harness.js';
  */
 
 let h: Harness;
+/** The public routes are exercised with scanning off and real bytes, so an upload is servable. */
+let pages: Harness;
 
 beforeAll(async () => {
   h = await createHarness();
+  pages = await createHarness({ MALWARE_SCAN_ENABLED: 'false' }, { storage: memoryStorage() });
 });
 
 afterAll(async () => {
   await h.close();
+  await pages.close();
 });
 
 interface ShareBody {
@@ -33,12 +45,13 @@ interface ShareBody {
   downloadCount: number;
 }
 
-async function createShare(
+async function createShareOn(
+  harness: Harness,
   token: string,
   fileId: string,
   body: Record<string, unknown> = {},
 ): Promise<ShareBody> {
-  const response = await h.server.inject({
+  const response = await harness.server.inject({
     method: 'POST',
     url: '/api/v1/shares',
     headers: bearer(token),
@@ -48,6 +61,60 @@ async function createShare(
     throw new Error(`share creation failed with ${response.statusCode}: ${response.body}`);
   }
   return response.json<ShareBody>();
+}
+
+function createShare(
+  token: string,
+  fileId: string,
+  body: Record<string, unknown> = {},
+): Promise<ShareBody> {
+  return createShareOn(h, token, fileId, body);
+}
+
+/**
+ * Uploads one small object through the real engine, so the share's byte route has a storage object
+ * to stream. `createFileFixture` writes only the row, which is enough for a page but not a download.
+ */
+async function uploadOnePart(
+  harness: Harness,
+  token: string,
+  filename: string,
+  content: Buffer,
+  mimeType: string,
+): Promise<{ fileId: string; file: FileRecord }> {
+  const initiated = await harness.server.inject({
+    method: 'POST',
+    url: '/api/v1/uploads',
+    headers: { ...bearer(token), 'content-type': 'application/json' },
+    payload: { filename, sizeBytes: content.byteLength, mimeType },
+  });
+  if (initiated.statusCode !== 201) {
+    throw new Error(`initiate failed with ${initiated.statusCode}: ${initiated.body}`);
+  }
+  const { uploadId, fileId } = initiated.json<{ uploadId: string; fileId: string }>();
+
+  const part = await harness.server.inject({
+    method: 'PUT',
+    url: `/api/v1/uploads/${uploadId}/parts/1`,
+    headers: {
+      ...bearer(token),
+      'content-type': 'application/octet-stream',
+      'content-length': String(content.byteLength),
+    },
+    payload: content,
+  });
+  if (part.statusCode !== 200) {
+    throw new Error(`part failed with ${part.statusCode}: ${part.body}`);
+  }
+  const completed = await harness.server.inject({
+    method: 'POST',
+    url: `/api/v1/uploads/${uploadId}/complete`,
+    headers: bearer(token),
+  });
+  if (completed.statusCode !== 200) {
+    throw new Error(`complete failed with ${completed.statusCode}: ${completed.body}`);
+  }
+  return { fileId, file: completed.json<{ file: FileRecord }>().file };
 }
 
 interface ProblemBody {
@@ -318,5 +385,144 @@ describe('share revocation', () => {
     });
     expect(response.statusCode).toBe(404);
     expect((await resolve(share.token)).statusCode).toBe(200);
+  });
+});
+
+/**
+ * The public face of a link, driven with no Authorization header — because that is exactly who
+ * follows a share link. A second harness is used so the shared file is a real uploaded object with
+ * bytes behind it, not only a row.
+ */
+describe('share landing page and download', () => {
+  it('renders a landing page that embeds the file inline and links the download route', async () => {
+    const account = await createAccount(pages.sql);
+    const { fileId } = await uploadOnePart(
+      pages,
+      account.token,
+      'photo.png',
+      Buffer.from('8950', 'hex'),
+      'image/png',
+    );
+    const share = await createShareOn(pages, account.token, fileId);
+
+    const page = await pages.server.inject({ method: 'GET', url: `/s/${share.token}` });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers['content-type']).toContain('text/html');
+    // The page's own policy, not the stricter API default: proving the security hook leaves a
+    // route-set CSP alone. `img-src`/`media-src` are unique to the page's policy.
+    expect(page.headers['content-security-policy']).toContain("img-src 'self'");
+    expect(page.headers['content-security-policy']).toContain("media-src 'self'");
+    expect(page.headers['x-robots-tag']).toContain('noindex');
+    expect(page.body).toContain(`href="/s/${share.token}/download"`);
+    expect(page.body).toContain('<img');
+    expect(page.body).toContain('photo.png');
+
+    // Opening the page is the counted event.
+    const rows = await pages.sql<{ downloadCount: number }[]>`
+      select download_count as "downloadCount" from shares where id = ${share.id}
+    `;
+    expect(rows[0]?.downloadCount).toBe(1);
+  });
+
+  it('streams the shared bytes byte-exactly, honours a range, and never counts itself', async () => {
+    const account = await createAccount(pages.sql);
+    const bytes = Buffer.from('0123456789abcdef', 'utf8');
+    const { fileId } = await uploadOnePart(
+      pages,
+      account.token,
+      'blob.bin',
+      bytes,
+      'application/octet-stream',
+    );
+    const share = await createShareOn(pages, account.token, fileId);
+
+    const whole = await pages.server.inject({ method: 'GET', url: `/s/${share.token}/download` });
+    expect(whole.statusCode).toBe(200);
+    expect(whole.rawPayload.equals(bytes)).toBe(true);
+    expect(whole.headers['content-disposition']).toMatch(/^attachment;/);
+    expect(whole.headers['accept-ranges']).toBe('bytes');
+
+    const ranged = await pages.server.inject({
+      method: 'GET',
+      url: `/s/${share.token}/download`,
+      headers: { range: 'bytes=2-5' },
+    });
+    expect(ranged.statusCode).toBe(206);
+    expect(ranged.headers['content-range']).toBe(`bytes 2-5/${bytes.byteLength}`);
+    expect(ranged.rawPayload.equals(bytes.subarray(2, 6))).toBe(true);
+
+    // The byte route cannot raise the counter: the page is what consumes the allowance.
+    const rows = await pages.sql<{ downloadCount: number }[]>`
+      select download_count as "downloadCount" from shares where id = ${share.id}
+    `;
+    expect(rows[0]?.downloadCount).toBe(0);
+  });
+
+  it('serves an image inline so the landing page can display it', async () => {
+    const account = await createAccount(pages.sql);
+    const { fileId } = await uploadOnePart(
+      pages,
+      account.token,
+      'p.png',
+      Buffer.from('8950', 'hex'),
+      'image/png',
+    );
+    const share = await createShareOn(pages, account.token, fileId);
+
+    const response = await pages.server.inject({
+      method: 'GET',
+      url: `/s/${share.token}/download`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-disposition']).toMatch(/^inline;/);
+  });
+
+  it('answers a revoked or unknown link with the same unavailable page at both routes', async () => {
+    const account = await createAccount(pages.sql);
+    const { fileId } = await uploadOnePart(
+      pages,
+      account.token,
+      'x.bin',
+      Buffer.from('x'),
+      'application/octet-stream',
+    );
+    const share = await createShareOn(pages, account.token, fileId);
+
+    const revoked = await pages.server.inject({
+      method: 'DELETE',
+      url: `/api/v1/shares/${share.id}`,
+      headers: bearer(account.token),
+    });
+    expect(revoked.statusCode).toBe(204);
+
+    const afterRevoke = await pages.server.inject({ method: 'GET', url: `/s/${share.token}` });
+    const unknown = await pages.server.inject({ method: 'GET', url: `/s/${'A'.repeat(43)}` });
+    expect(afterRevoke.statusCode).toBe(404);
+    expect(unknown.statusCode).toBe(404);
+    expect(afterRevoke.body).toBe(unknown.body);
+
+    expect(
+      (await pages.server.inject({ method: 'GET', url: `/s/${share.token}/download` })).statusCode,
+    ).toBe(404);
+  });
+
+  it('counts one open per page load and refuses the next past the cap', async () => {
+    const account = await createAccount(pages.sql);
+    const { fileId } = await uploadOnePart(
+      pages,
+      account.token,
+      'once.bin',
+      Buffer.from('once'),
+      'application/octet-stream',
+    );
+    const share = await createShareOn(pages, account.token, fileId, { maxDownloads: 1 });
+
+    expect(
+      (await pages.server.inject({ method: 'GET', url: `/s/${share.token}` })).statusCode,
+    ).toBe(200);
+
+    const second = await pages.server.inject({ method: 'GET', url: `/s/${share.token}` });
+    expect(second.statusCode).toBe(410);
+    expect(second.body).toContain('Download limit reached');
   });
 });

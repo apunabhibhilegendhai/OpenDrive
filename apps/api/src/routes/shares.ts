@@ -14,12 +14,23 @@ import {
   resolveShareLink,
   validationFailed,
 } from '@opendrive/shared';
-import { z } from 'zod';
+import type { ShareRefusalReason } from '@opendrive/shared';
+import { Readable } from 'node:stream';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
+import { z } from 'zod';
 import { REQUIRED_SCOPES, assertFileOwnership, ownerKeyOf, requireScope } from '../authz.js';
+import { contentDisposition } from '../content-disposition.js';
 import { toFileRecord, toShareRecord } from '../db/mappers.js';
+import type { FileEntity, ShareEntity } from '../db/entities.js';
 import { findFileById, findFileByIdForAccessCheck } from '../db/repositories/files.js';
-import { insertShare, findShareByTokenHash, revokeShare } from '../db/repositories/shares.js';
+import { findActiveStorageObjectByFileId } from '../db/repositories/storage-objects.js';
+import {
+  countShareOpen,
+  insertShare,
+  findShareByTokenHash,
+  revokeShare,
+} from '../db/repositories/shares.js';
 import {
   AUDIT_ACTIONS,
   recordAuditEvent,
@@ -27,6 +38,14 @@ import {
 } from '../db/repositories/audit.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
+import {
+  SHARE_PAGE_CSP,
+  previewKindFor,
+  renderSharePage,
+  renderShareUnavailablePage,
+} from '../share-page.js';
+import { requireStorageProvider } from '../storage/registry.js';
+import { parseRangeHeader } from './range.js';
 
 /**
  * Share links.
@@ -47,6 +66,12 @@ import type { AppServices } from '../services.js';
  *
  * Share creation goes through the *owner's* credential and the file's ownership check, so a share
  * can never be minted for someone else's file, and never for a file that is not servable.
+ *
+ * The same token also has a *public* face, for a browser rather than an API client:
+ * `GET /s/:token` renders a landing page and `GET /s/:token/download` streams the bytes with range
+ * support. Opening the page is what consumes the link's download allowance, so one open plus one
+ * download counts once; the byte route never increments, which is also why a shared video can fetch
+ * its ranges without the allowance evaporating mid-playback.
  */
 
 const shareParamsSchema = z.object({
@@ -54,6 +79,104 @@ const shareParamsSchema = z.object({
     .string()
     .regex(/^shr_[0-9a-hjkmnp-tv-z]{26}$/, 'Expected a share id with the "shr_" prefix'),
 });
+
+/**
+ * The token in a public link. Deliberately permissive: a malformed or invented token must fall
+ * through to the same "not available" answer as a real-but-dead one, never to a validation error
+ * that would tell a prober something.
+ */
+const publicShareParamsSchema = z.object({
+  token: z.string().min(1).max(512),
+});
+
+type ShareLookup =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'refused'; readonly share: ShareEntity; readonly reason: ShareRefusalReason }
+  | { readonly kind: 'resolved'; readonly share: ShareEntity; readonly file: FileEntity };
+
+/**
+ * The one place a share token becomes a decision, shared by the JSON resolve route and the public
+ * landing/download routes so they cannot drift apart.
+ *
+ * `enforceAllowance` exists because the allowance is spent at the landing page: the bytes that open
+ * then asks for must not be refused because of the very open that requested them. Passing a fresh
+ * count for the byte route expresses "ignore the counter", not "the link is unlimited".
+ */
+async function lookUpShare(
+  services: AppServices,
+  token: string,
+  options: { readonly enforceAllowance: boolean },
+): Promise<ShareLookup> {
+  const sql = services.db.requireSql();
+  const share = await findShareByTokenHash(sql, await credentialDigest(token));
+  if (share === null) return { kind: 'missing' };
+
+  const file = await findFileByIdForAccessCheck(sql, share.fileId);
+  // A link whose file row is gone is indistinguishable from a token that never existed.
+  if (file === null) return { kind: 'missing' };
+
+  const resolution = resolveShareLink(
+    {
+      status: share.status,
+      expiresAt: share.expiresAt,
+      revokedAt: share.revokedAt,
+      maxDownloads: share.maxDownloads,
+      downloadCount: share.downloadCount,
+    },
+    {
+      state: file.state,
+      visibility: file.visibility,
+      deletedAt: file.deletedAt,
+      scanState: file.scanState,
+    },
+    {
+      now: new Date(),
+      scanningEnabled: services.config.limits.malwareScanEnabled,
+      ...(options.enforceAllowance ? {} : { downloadCount: 0 }),
+    },
+  );
+
+  if (!resolution.ok) return { kind: 'refused', share, reason: resolution.reason };
+  return { kind: 'resolved', share, file };
+}
+
+/** Records a refusal without ever disclosing which rule produced it. */
+async function recordShareRefusal(
+  services: AppServices,
+  request: FastifyRequest,
+  shareId: string,
+  reason: ShareRefusalReason,
+): Promise<void> {
+  await recordAuditEventBestEffort(
+    services.db.requireSql(),
+    {
+      actorKind: 'anonymous',
+      actorUserId: null,
+      action: AUDIT_ACTIONS.authorizationDenied,
+      subjectType: 'share',
+      subjectId: shareId,
+      requestId: request.id,
+      actorIpHash: request.clientIpHash,
+      metadata: { reason },
+    },
+    request.log,
+  );
+}
+
+/** The HTML answer for a link that will not be served, with the page's own tighter CSP. */
+function sendShareUnavailablePage(
+  reply: FastifyReply,
+  status: number,
+  heading: string,
+  message: string,
+): FastifyReply {
+  void reply.header('content-security-policy', SHARE_PAGE_CSP);
+  void reply.header('x-robots-tag', 'noindex, nofollow');
+  return reply
+    .status(status)
+    .type('text/html; charset=utf-8')
+    .send(renderShareUnavailablePage({ heading, message }));
+}
 
 export const shareRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
   app.post(
@@ -158,7 +281,6 @@ export const shareRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servi
       },
     },
     async (request) => {
-      const sql = services.db.requireSql();
       const bodyToken = request.body?.token ?? null;
       const headerToken = request.headers[SHARE_TOKEN_HEADER] ?? null;
 
@@ -175,55 +297,147 @@ export const shareRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servi
         ]);
       }
 
-      const tokenHash = await credentialDigest(token);
-      const share = await findShareByTokenHash(sql, tokenHash);
-      if (share === null) {
+      const lookup = await lookUpShare(services, token, { enforceAllowance: true });
+      if (lookup.kind === 'missing') {
+        throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
+      }
+      if (lookup.kind === 'refused') {
+        // Recorded, but never disclosed here: the caller sees the same 404 for every reason,
+        // including an exhausted download allowance.
+        await recordShareRefusal(services, request, lookup.share.id, lookup.reason);
         throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
       }
 
-      const file = await findFileByIdForAccessCheck(sql, share.fileId);
-      if (file === null) {
-        // A link whose file row is gone is indistinguishable from a token that never existed.
-        throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
-      }
+      return { share: toShareRecord(lookup.share), file: toFileRecord(lookup.file) };
+    },
+  );
 
-      const resolution = resolveShareLink(
-        {
-          status: share.status,
-          expiresAt: share.expiresAt,
-          revokedAt: share.revokedAt,
-          maxDownloads: share.maxDownloads,
-          downloadCount: share.downloadCount,
-        },
-        {
-          state: file.state,
-          visibility: file.visibility,
-          deletedAt: file.deletedAt,
-          scanState: file.scanState,
-        },
-        { now: new Date(), scanningEnabled: services.config.limits.malwareScanEnabled },
-      );
+  /**
+   * The recipient's view of a link: a page a browser renders.
+   *
+   * Hidden from OpenAPI on purpose — it answers HTML, not JSON, so it is not part of the API
+   * contract. Opening the page is what consumes the link's allowance.
+   */
+  app.get(
+    '/s/:token',
+    { schema: { hide: true, params: publicShareParamsSchema } },
+    async (request, reply) => {
+      const lookup = await lookUpShare(services, request.params.token, { enforceAllowance: true });
 
-      if (!resolution.ok) {
-        // Recorded, but never disclosed: the caller sees the same 404 for every reason.
-        await recordAuditEventBestEffort(
-          sql,
-          {
-            actorKind: 'anonymous',
-            actorUserId: null,
-            action: AUDIT_ACTIONS.authorizationDenied,
-            subjectType: 'share',
-            subjectId: share.id,
-            requestId: request.id,
-            actorIpHash: request.clientIpHash,
-            metadata: { reason: resolution.reason },
-          },
-          request.log,
+      if (lookup.kind === 'refused' && lookup.reason === 'download_limit_reached') {
+        // The one refusal the design allows disclosing: it describes the caller's own usage,
+        // and a recipient who hits it deserves to be told why rather than told "not found".
+        return sendShareUnavailablePage(
+          reply,
+          410,
+          'Download limit reached',
+          'This link has reached its download limit and can no longer be opened.',
         );
+      }
+      if (lookup.kind !== 'resolved') {
+        if (lookup.kind === 'refused') {
+          await recordShareRefusal(services, request, lookup.share.id, lookup.reason);
+        }
+        return sendShareUnavailablePage(
+          reply,
+          404,
+          'Link not available',
+          'This link is not available. It may have been revoked or expired, or it may never have existed.',
+        );
+      }
+
+      // Count the open atomically before rendering. A `null` means the link was revoked or spent
+      // between resolution and this write; the same refusal is the honest answer.
+      const downloadCount = await countShareOpen(services.db.requireSql(), lookup.share.id);
+      if (downloadCount === null) {
+        return sendShareUnavailablePage(
+          reply,
+          404,
+          'Link not available',
+          'This link is not available. It may have been revoked or expired, or it may never have existed.',
+        );
+      }
+
+      const { file } = lookup;
+      void reply.header('content-security-policy', SHARE_PAGE_CSP);
+      void reply.header('x-robots-tag', 'noindex, nofollow');
+      return reply
+        .status(200)
+        .type('text/html; charset=utf-8')
+        .send(
+          renderSharePage({
+            token: request.params.token,
+            filename: file.originalFilename,
+            sizeBytes: file.sizeBytes,
+            mimeType: file.mimeType,
+            previewKind: previewKindFor(file.mimeType),
+            expiresAt: lookup.share.expiresAt,
+            maxDownloads: lookup.share.maxDownloads,
+            downloadCount,
+          }),
+        );
+    },
+  );
+
+  /**
+   * The bytes behind the page, and the target of the download button.
+   *
+   * Range-capable for the same reason the owner route is (D40): a shared video must be seekable
+   * without downloading it whole. The allowance is deliberately *not* re-checked here — the open
+   * already spent it, and re-checking would refuse the bytes that open just asked for. The
+   * consequence, recorded in D44, is that the byte route cannot be used to *raise* the count.
+   */
+  app.get(
+    '/s/:token/download',
+    { schema: { hide: true, params: publicShareParamsSchema } },
+    async (request, reply) => {
+      const provider = requireStorageProvider(services.storage);
+      const sql = services.db.requireSql();
+      const lookup = await lookUpShare(services, request.params.token, { enforceAllowance: false });
+
+      if (lookup.kind !== 'resolved') {
+        if (lookup.kind === 'refused') {
+          await recordShareRefusal(services, request, lookup.share.id, lookup.reason);
+        }
         throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
       }
 
-      return { share: toShareRecord(share), file: toFileRecord(file) };
+      const { file } = lookup;
+      const object = await findActiveStorageObjectByFileId(sql, file.id);
+      if (object === null) {
+        // Resolvable but no object: a state this build should never produce. Report it as absent
+        // rather than streaming nothing with a 200.
+        throw new AppError('NOT_FOUND', { detail: 'The file has no stored content.' });
+      }
+
+      const totalSize = object.ref.sizeBytes;
+      const rangedRead = provider.capabilities.rangedRead;
+      void reply.header('accept-ranges', rangedRead ? 'bytes' : 'none');
+      const requested = rangedRead ? parseRangeHeader(request.headers.range, totalSize) : null;
+
+      if (requested === 'unsatisfiable') {
+        void reply.header('content-range', `bytes */${totalSize}`);
+        throw new AppError('RANGE_NOT_SATISFIABLE', {
+          detail: `The requested range is outside the object (0-${totalSize - 1}).`,
+        });
+      }
+
+      const read = await provider.openReadStream(object.ref, requested ?? undefined);
+      void reply.header('content-type', file.mimeType);
+      void reply.header('content-length', String(read.length));
+      void reply.header(
+        'content-disposition',
+        contentDisposition(file.originalFilename, file.mimeType),
+      );
+      void reply.header('cache-control', 'private, no-store');
+      if (read.range !== null) {
+        void reply.header(
+          'content-range',
+          `bytes ${read.range.start}-${read.range.endInclusive}/${totalSize}`,
+        );
+        void reply.status(206);
+      }
+      return reply.send(Readable.from(read.stream));
     },
   );
 

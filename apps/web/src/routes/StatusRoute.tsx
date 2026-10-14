@@ -152,8 +152,9 @@ export function StatusRoute() {
           </li>
           <li>
             <Icon name="alert" size={15} />
-            No share listing and no <span className="mono">/s/:token</span> landing page: links can
-            be created, resolved by token and revoked, but not enumerated or opened in a browser.
+            No share <em>listing</em>: a link can be created, opened at{' '}
+            <span className="mono">/s/:token</span> and revoked, but the API has no route that
+            enumerates a file's links.
           </li>
           <li>
             <Icon name="alert" size={15} />

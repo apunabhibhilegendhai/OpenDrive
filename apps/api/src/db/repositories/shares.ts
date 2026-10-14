@@ -137,3 +137,31 @@ export async function revokeShare(
     throw translateWriteError(error, 'The share link could not be revoked.');
   }
 }
+
+/**
+ * Counts one open against a link, atomically, and refuses past its allowance.
+ *
+ * The public landing page resolves the link (status, expiry, file state) a moment before calling
+ * this, so the allowance itself is enforced *here*, as part of the write: two requests that both
+ * read the last free slot cannot both increment it. Returns the new count, or `null` when nothing
+ * matched — revoked, expired, or already at its cap by the time the row was locked. The caller
+ * answers a `null` with the same refusal it gives a dead link, so a race cannot become a free open.
+ */
+export async function countShareOpen(sql: SqlExecutor, shareId: string): Promise<number | null> {
+  try {
+    const rows = await sql<{ downloadCount: number }[]>`
+      update shares
+         set download_count = download_count + 1
+       where id = ${shareId}
+         and status = 'active'
+         and revoked_at is null
+         and (expires_at is null or expires_at > now())
+         and (max_downloads is null or download_count < max_downloads)
+      returning download_count as "downloadCount"
+    `;
+    const row = rows[0];
+    return row === undefined ? null : row.downloadCount;
+  } catch (error) {
+    throw translateWriteError(error, 'The share link could not be counted.');
+  }
+}

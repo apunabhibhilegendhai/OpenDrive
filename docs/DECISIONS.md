@@ -922,3 +922,44 @@ sets cross-origin CORP; a token is scoped to one file and refused for a sibling 
 download keeps same-origin; no secret answers 503), and `apps/web/src/routes/DriveRoute.test.tsx`
 ("shows an image through a signed preview link the API minted", "reports a refused preview instead of
 showing a broken element").
+
+## D44. A share link opens a landing page and streams from a range-capable byte route; opening the page is what counts
+
+**Chosen:** `/s/:token` and `/s/:token/download`, on the API origin and outside `API_PREFIX`, give a
+share link a public face for a browser rather than an API client. `GET /s/:token` renders a small
+self-contained HTML page — filename, size, type, an inline `<img>`/`<video>`/`<audio>` for the
+inline allow-list, and a download button — and `GET /s/:token/download` streams the stored object
+with the same range handling as the owner content route (D40), the shared `contentDisposition`
+(`inline` for the allow-list, `attachment` otherwise) and `cache-control: private, no-store`. Both
+routes resolve through one helper (`lookUpShare`), so they cannot disagree. A refusal answers the
+same "Link not available" page (404) as an unknown token; the one disclosed refusal is an exhausted
+download allowance, which answers `410` with its own wording. Opening the page increments
+`download_count` through `countShareOpen`, whose predicate is part of the `UPDATE`, so two requests
+cannot both take the last slot. The _byte_ route does not touch the counter. The page ships no
+scripts and its own CSP (`default-src 'none'; img-src 'self'; media-src 'self'; style-src
+'unsafe-inline'; frame-ancestors 'none'`), which `security.ts` now leaves alone the way it already
+left a route-set CORP alone. `server.ts` redacts the `/s/<token>` path segment from request logs, as
+it already redacts a `preview` token. Both routes are `hide: true`: they answer HTML and bytes, not
+JSON, so they are not part of the OpenAPI contract.
+
+**Why:** a share URL is opened by a person, so it must return a page, and the byte route must be
+separate so that a click, a range request and an embedded element all reach one streaming handler.
+Counting the _open_ is what makes "page then download counts once": if the byte route also
+incremented, a video's many range requests would drain the allowance mid-playback — which is the
+whole reason D40 exists — and if the page did not increment, a capped link would never count at all.
+Serving bytes `inline` for the allow-list is what lets the page embed a preview, and the allow-list
+keeps SVG and HTML as downloads, so the API origin never renders active content.
+
+**Honest limits:** the byte route cannot raise the counter, so a hotlinker who never opens the page
+can read the object without spending allowance — the cap bounds _opens_, not bandwidth, and is not a
+DRM. The token still travels in the URL and therefore through `Referer` headers and history, which is
+why resolution is re-checked on every request and revocation takes effect immediately. There is still
+no share _listing_ route, so an owner can see a link only where it was created, and the page shows
+expiry as a date rather than a countdown.
+
+**Guarded by:** `apps/api/src/share-page.test.ts` (escaping, preview-element choice, size
+formatting), `apps/api/src/server.test.ts` ("redacts a share token in a path without hiding the
+route"), and `tests/integration/src/shares.test.ts` ("renders a landing page that embeds the file
+inline and links the download route", "streams the shared bytes byte-exactly, and honours a range",
+"answers a revoked, unknown or spent link with the same unavailable page", "counts one open per page
+load and refuses the next past the cap").

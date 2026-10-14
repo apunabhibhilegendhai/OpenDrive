@@ -76,6 +76,16 @@ export function redactPreviewToken(url: string): string {
   return url.replace(/([?&]preview=)[^&#]*/i, '$1[redacted]');
 }
 
+/**
+ * A share link carries its bearer token in the path. The reasoning behind redacting a preview token
+ * applies unchanged: the default request logging includes `req.url`, and a token that reaches a log
+ * line can be replayed. Only the `/s/<token>` segment is hidden; a `/s/<token>/download` request
+ * still logs its `/download` suffix, so the route stays legible.
+ */
+export function redactShareToken(url: string): string {
+  return url.replace(/^\/s\/[^/?#]+/, '/s/[redacted]');
+}
+
 interface ValidationIssueLike {
   instancePath?: string;
   message?: string;
@@ -141,7 +151,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         }) => ({
           id: request.id,
           method: request.method,
-          url: redactPreviewToken(request.url ?? ''),
+          url: redactShareToken(redactPreviewToken(request.url ?? '')),
           host: request.host,
           remoteAddress: request.ip,
           remotePort: request.socket?.remotePort,

@@ -7,7 +7,7 @@ import {
   readinessResponseSchema,
 } from '@opendrive/shared';
 import { loadConfig } from './config.js';
-import { buildServer, redactPreviewToken } from './server.js';
+import { buildServer, redactPreviewToken, redactShareToken } from './server.js';
 
 const openServers: FastifyInstance[] = [];
 
@@ -217,6 +217,15 @@ describe('log redaction', () => {
     expect(redactPreviewToken('/api/v1/files?preview=abc&limit=5')).toBe(
       '/api/v1/files?preview=[redacted]&limit=5',
     );
+  });
+
+  it('redacts a share token in a path without hiding the route', () => {
+    expect(redactShareToken('/s/abcDEF012345')).toBe('/s/[redacted]');
+    expect(redactShareToken('/s/abcDEF012345/download')).toBe('/s/[redacted]/download');
+    expect(redactShareToken('/s/abcDEF012345?x=1')).toBe('/s/[redacted]?x=1');
+    // Not a share link: the segment is `/s`, not `/s/`, so the API's own routes are untouched.
+    expect(redactShareToken('/api/v1/shares')).toBe('/api/v1/shares');
+    expect(redactShareToken('/healthz')).toBe('/healthz');
   });
 });
 

@@ -8,9 +8,9 @@ import { useApi } from '../lib/auth/session.js';
  * Create a share link.
  *
  * The token is returned exactly once by the API and cannot be listed afterwards, so the dialog
- * says that plainly and offers to copy it while it is still on screen. There is no share landing
- * page yet in this deployment, so the link's destination is described honestly rather than
- * presented as a working download.
+ * says that plainly and offers to copy it while it is still on screen. The returned `url` opens a
+ * public landing page where the recipient can preview the file — images, audio and video render in
+ * place — and download it, for as long as the link stays active.
  */
 export function ShareDialog({
   file,
@@ -213,8 +213,8 @@ export function ShareDialog({
               </button>
               <p className="inspector__note">
                 <Icon name="info" size={14} />
-                No share landing page is served in this deployment yet, so the link's address is
-                informational: resolving it needs the API. This does not affect owner downloads.
+                The link opens a page where the recipient can preview and download the file. It
+                stops working the moment it is revoked, expires, or reaches its download limit.
               </p>
             </div>
           )}

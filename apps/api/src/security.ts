@@ -43,8 +43,12 @@ export function applySecurityHeaders(
   }
   void reply.header('x-frame-options', 'DENY');
   // Swagger UI relies on inline script/style, so it gets a relaxed but still
-  // self-only policy. Every other response forbids all resource loading.
-  void reply.header('content-security-policy', docs ? DOCS_CSP : STRICT_CSP);
+  // self-only policy. A route that intentionally serves HTML (the share landing page) sets its own
+  // policy first, and it is respected rather than overwritten. Every other response forbids all
+  // resource loading.
+  if (reply.getHeader('content-security-policy') === undefined) {
+    void reply.header('content-security-policy', docs ? DOCS_CSP : STRICT_CSP);
+  }
 
   if (!isCacheableAsset(url, docsPrefix)) {
     // API responses include private metadata; never let a cache store them.
