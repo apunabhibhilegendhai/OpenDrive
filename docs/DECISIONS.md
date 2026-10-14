@@ -821,3 +821,30 @@ overlapping parts and only their needed sub-ranges; an invalid range is `INVALID
 (`206`, `Content-Range`, byte-exact body, `200` without a range, and `416` past the end), and
 `apps/web/src/lib/files/download.test.ts` (window sizing and order, retry, whole-object fallback,
 and the buffered path).
+
+## D41. A failed upload releases its session, so "try again" is actually possible
+
+**Chosen:** the web upload queue remembers the id of every server session it opens and releases it
+(`DELETE /uploads/:id`) whenever the upload will not be finalized - because the run failed after
+every retry was spent, or because the queue was torn down (sign-out, account switch, unmount). A
+user cancel is unchanged: it still reports when its own release call does not reach the API. The
+release is best-effort and idempotent - a session already gone answers `404`, which the client
+treats as success - with the server's session TTL as the backstop.
+
+**Why:** the API bounds how many uploads one principal may have open at once
+(`UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL`, default 3), and an open session counts until it is
+finalized, aborted or expires. A large upload that failed partway (a transient edge `502` on one
+part, as the 862 MiB E2E sees) left its session open, so a few failed attempts in a row made the
+_next_ attempt answer `429 RATE_LIMITED` "At most 3 uploads may be open at once" - which reads to a
+person as "the same file cannot be uploaded again". The bytes were never the problem: uploading the
+same file twice in a row is accepted (there is no content dedup). Releasing the abandoned session is
+what restores the retry.
+
+**Honest limits:** releasing drops the staged bytes, so a retry restarts the object from its first
+part rather than resuming it. A tab closed mid-upload cannot run a release; that session lingers
+until its TTL (24 h) or the API process restarts (sessions are process-local, not persisted). This is
+client hygiene, not server-side resumption.
+
+**Guarded by:** `apps/web/src/routes/DriveRoute.test.tsx` ("gives the failed session back, so the
+next upload is not refused"): a part refused with `413` ends the upload and the client issues the
+`DELETE`; the live API was also driven through six release-then-retry cycles, every one accepted.

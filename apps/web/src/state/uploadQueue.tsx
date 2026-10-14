@@ -188,6 +188,10 @@ export function UploadQueueProvider({
   const [items, setItems] = useState<UploadItem[]>([]);
   const files = useRef(new Map<string, File>());
   const controllers = useRef(new Map<string, AbortController>());
+  // Open server sessions by local item id. An upload that ends without being finalized must
+  // release its session: open sessions count against the per-principal cap, so an abandoned one is
+  // exactly what makes the *next* attempt answer "at most N uploads may be open at once".
+  const sessions = useRef(new Map<string, string>());
   const nextId = useRef(1);
 
   const patch = useCallback((localId: string, changes: Partial<UploadItem>) => {
@@ -195,6 +199,24 @@ export function UploadQueueProvider({
       current.map((item) => (item.id === localId ? { ...item, ...changes } : item)),
     );
   }, []);
+
+  /**
+   * Releases the server-side session for an item that will not be finalized.
+   *
+   * An upload that ends without completing — the person cancelled it, or every retry was spent —
+   * leaves a session open on the API. Open sessions count against the small per-principal cap, so
+   * an abandoned one is what turns one failed attempt into a refused next attempt. Releasing here
+   * is idempotent (a session already gone answers 404, which the client treats as success) and
+   * best-effort: if the call fails the server still expires the session on its own.
+   */
+  const releaseSession = useCallback(
+    (localId: string, uploadId: string | null): void => {
+      if (uploadId === null) return;
+      sessions.current.delete(localId);
+      void api.abortUpload(uploadId).catch(() => undefined);
+    },
+    [api],
+  );
 
   const enqueue = useCallback((incoming: File[], folderId: string | null) => {
     const additions: UploadItem[] = incoming.map((file) => {
@@ -225,6 +247,7 @@ export function UploadQueueProvider({
       const controller = new AbortController();
       controllers.current.set(item.id, controller);
       const file = files.current.get(item.id);
+      let uploadId: string | null = null;
       try {
         if (limits === null) {
           patch(item.id, { phase: 'failed', error: 'The API limits have not loaded yet.' });
@@ -253,6 +276,8 @@ export function UploadQueueProvider({
           },
           controller.signal,
         );
+        uploadId = initiated.uploadId;
+        sessions.current.set(item.id, uploadId);
         patch(item.id, {
           uploadId: initiated.uploadId,
           fileId: initiated.fileId,
@@ -347,18 +372,24 @@ export function UploadQueueProvider({
           uploadedBytes: item.sizeBytes,
         });
         files.current.delete(item.id);
+        sessions.current.delete(item.id);
         onUploadCompleted?.(completed.file.id);
       } catch (failure) {
         if (failure instanceof DOMException && failure.name === 'AbortError') {
+          // A user cancel (`cancel`) or a teardown releases the session itself; the run must not
+          // race it with a second release.
           patch(item.id, { phase: 'aborted' });
           return;
         }
+        // Every attempt was spent, so this session will never finalize on its own. Release it
+        // before reporting the outcome, so the next attempt is not refused by this session.
+        releaseSession(item.id, uploadId);
         patch(item.id, { phase: 'failed', error: describeFailure(failure) });
       } finally {
         controllers.current.delete(item.id);
       }
     },
-    [api, limits, onUploadCompleted, patch, rememberDeletionToken],
+    [api, limits, onUploadCompleted, patch, releaseSession, rememberDeletionToken],
   );
 
   // The pump: one active upload, started whenever the queue has work and nothing is running.
@@ -371,12 +402,18 @@ export function UploadQueueProvider({
   }, [items, run]);
 
   // A sign-out or account switch discards the queue: the next principal must not inherit it.
+  // Any session still open is released too, so the next principal does not start out already
+  // holding this one's abandoned sessions against its own cap.
   useEffect(() => {
     return () => {
       for (const controller of controllers.current.values()) controller.abort();
       controllers.current.clear();
+      for (const uploadId of sessions.current.values()) {
+        void api.abortUpload(uploadId).catch(() => undefined);
+      }
+      sessions.current.clear();
     };
-  }, [epoch]);
+  }, [epoch, api]);
 
   const cancel = useCallback(
     (localId: string) => {
@@ -386,6 +423,7 @@ export function UploadQueueProvider({
       if (controller !== undefined) {
         controller.abort();
       }
+      sessions.current.delete(localId);
       if (item.uploadId !== null && item.phase !== 'ready') {
         void api.abortUpload(item.uploadId).catch(() => {
           patch(localId, {

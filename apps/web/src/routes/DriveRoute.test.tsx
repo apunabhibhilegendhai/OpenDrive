@@ -251,6 +251,37 @@ describe('uploading', () => {
     ).toBe(false);
   });
 
+  it('gives the failed session back, so the next upload is not refused', async () => {
+    const routes: FakeRoute[] = [
+      ...defaultRoutes(),
+      initiateRoute(),
+      partRoute(() =>
+        problem(413, 'PAYLOAD_TOO_LARGE', 'That part is larger than this deployment accepts.'),
+      ),
+      completeRoute(),
+      abortRoute(),
+    ];
+    const { server } = renderApp({ session: sessionFixture(), routes });
+
+    await screen.findByText('chart.png');
+    chooseFiles('holiday.png', 200);
+
+    expect(
+      await screen.findByText(/That part is larger than this deployment accepts\./),
+    ).toBeTruthy();
+
+    // The attempt ended without finalizing, so its session is still open on the API. Open sessions
+    // count against the per-principal cap; leaving it behind is what makes a retry answer "at most
+    // N uploads may be open at once". The client must release it.
+    await waitFor(() =>
+      expect(
+        server.calls.some(
+          (call) => call.method === 'DELETE' && call.path === `${API_PREFIX}/uploads/${UPLOAD_ID}`,
+        ),
+      ).toBe(true),
+    );
+  });
+
   it("cancels through the API and reports the API's answer, not the intention", async () => {
     const gate = deferred<FakeResponse>();
     const routes: FakeRoute[] = [
