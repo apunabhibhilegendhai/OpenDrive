@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { normalize, sep } from 'node:path';
-import type { ByteSource, ByteStream } from '@opendrive/shared';
+import type { ByteRange, ByteSource, ByteStream } from '@opendrive/shared';
 
 /**
  * Transport seam between the Telegram storage provider and the Bot API.
@@ -62,8 +62,13 @@ export interface TelegramTransport {
    */
   getFile(fileId: string): Promise<TelegramFileInfo>;
 
-  /** Streams the bytes at a resolved file path. Each call returns a single-use stream. */
-  download(filePath: string): Promise<ByteStream>;
+  /**
+   * Streams the bytes at a resolved file path. Each call returns a single-use stream. When a
+   * `range` is given the stream yields exactly those bytes: the request carries a `Range`
+   * header, and a server that ignores it (answering `200` instead of `206`) has its body
+   * trimmed here, so the caller never has to know which happened.
+   */
+  download(filePath: string, range?: ByteRange): Promise<ByteStream>;
 
   /** Removes a chat message; returns false when it was already absent. */
   deleteMessage(messageId: number): Promise<boolean>;
@@ -368,11 +373,12 @@ export class TelegramHttpTransport implements TelegramTransport {
     };
   }
 
-  async download(filePath: string): Promise<ByteStream> {
-    if (isAbsoluteFilePath(filePath)) return this.downloadLocalFile(filePath);
+  async download(filePath: string, range?: ByteRange): Promise<ByteStream> {
+    if (isAbsoluteFilePath(filePath)) return this.downloadLocalFile(filePath, range);
     return this.downloadFileUrl(
       `${this.apiBase}/file/bot${this.options.botToken}/${filePath}`,
       filePath,
+      range,
     );
   }
 
@@ -382,15 +388,16 @@ export class TelegramHttpTransport implements TelegramTransport {
    * otherwise rewrite them through `filesBaseUrl` (an nginx or similar file server serving
    * the server's `--dir`).
    */
-  private async downloadLocalFile(filePath: string): Promise<ByteStream> {
+  private async downloadLocalFile(filePath: string, range?: ByteRange): Promise<ByteStream> {
     const filesBaseUrl = this.options.filesBaseUrl;
     if (filesBaseUrl !== undefined && filesBaseUrl.length > 0) {
       return this.downloadFileUrl(
         `${filesBaseUrl.replace(/\/+$/, '')}/${this.relativeToWorkDir(filePath)}`,
         filePath,
+        range,
       );
     }
-    return localFileStream(filePath);
+    return localFileStream(filePath, range);
   }
 
   /** Turns an absolute `--local` path into a URL-safe path relative to the server's `--dir`. */
@@ -417,10 +424,16 @@ export class TelegramHttpTransport implements TelegramTransport {
     );
   }
 
-  private async downloadFileUrl(url: string, label: string): Promise<ByteStream> {
+  private async downloadFileUrl(
+    url: string,
+    label: string,
+    range?: ByteRange,
+  ): Promise<ByteStream> {
+    const headers: Record<string, string> = {};
+    if (range !== undefined) headers.Range = `bytes=${range.start}-${range.endInclusive}`;
     let response: Response;
     try {
-      response = await fetch(url, { method: 'GET' });
+      response = await fetch(url, { method: 'GET', headers });
     } catch (error) {
       throw new TelegramApiError(
         `Telegram file "${label}" could not be downloaded (network error).`,
@@ -431,6 +444,16 @@ export class TelegramHttpTransport implements TelegramTransport {
       );
     }
     if (!response.ok) {
+      if (response.status === 416) {
+        // The provider validated the range against the object size, so a server that cannot
+        // satisfy it means the stored bytes are shorter than the locator claims.
+        throw new TelegramApiError(
+          `Telegram file "${label}" cannot satisfy the requested byte range.`,
+          '',
+          response.status,
+          false,
+        );
+      }
       if (response.status === 400 || response.status === 404) {
         throw new TelegramNotFoundError(
           `Telegram file "${label}" is unavailable (HTTP ${response.status}).`,
@@ -453,10 +476,29 @@ export class TelegramHttpTransport implements TelegramTransport {
       );
     }
     const body = response.body;
+    // A `206` is exactly the range asked for. A `200` means the server ignored `Range`; trim it
+    // here so the caller always receives the requested window.
+    const trim = range !== undefined && response.status !== 206 ? range : null;
     return (async function* generate(): ByteStream {
       try {
-        for await (const chunk of body) {
-          yield chunk;
+        let skip = trim?.start ?? 0;
+        let remaining =
+          trim === null ? Number.POSITIVE_INFINITY : trim.endInclusive - trim.start + 1;
+        for await (const rawChunk of body) {
+          if (remaining <= 0) break;
+          // The web `ReadableStream` async iterator is untyped here; every chunk is bytes.
+          let view = rawChunk as Uint8Array;
+          if (skip > 0) {
+            if (view.byteLength <= skip) {
+              skip -= view.byteLength;
+              continue;
+            }
+            view = view.subarray(skip);
+            skip = 0;
+          }
+          if (view.byteLength > remaining) view = view.subarray(0, remaining);
+          remaining -= view.byteLength;
+          yield view;
         }
       } catch (error) {
         // `fetch` already resolved, so the connection dropped while the body was streaming.
@@ -503,10 +545,12 @@ function isAbsoluteFilePath(filePath: string): boolean {
 }
 
 /** Streams a local file, mapping filesystem failures onto the transport's error classes. */
-function localFileStream(filePath: string): ByteStream {
+function localFileStream(filePath: string, range?: ByteRange): ByteStream {
+  // `createReadStream`'s `end` is inclusive, matching `ByteRange.endInclusive`.
+  const options = range === undefined ? undefined : { start: range.start, end: range.endInclusive };
   return (async function* generate(): ByteStream {
     try {
-      for await (const chunk of createReadStream(filePath)) {
+      for await (const chunk of createReadStream(filePath, options)) {
         yield chunk;
       }
     } catch (error) {

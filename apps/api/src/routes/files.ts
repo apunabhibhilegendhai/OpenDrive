@@ -30,6 +30,7 @@ import { decodeCursor } from '../pagination.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
+import { parseRangeHeader } from './range.js';
 
 /**
  * File metadata and content.
@@ -157,7 +158,23 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         throw new AppError('NOT_FOUND', { detail: 'The file has no stored content.' });
       }
 
-      const read = await provider.openReadStream(object.ref);
+      const totalSize = object.ref.sizeBytes;
+      const rangedRead = provider.capabilities.rangedRead;
+      // Advertise range support only when the provider can actually serve a partial object; a
+      // `Range` header from a client is ignored (whole object, 200) everywhere else.
+      void reply.header('accept-ranges', rangedRead ? 'bytes' : 'none');
+      const requested = rangedRead ? parseRangeHeader(request.headers.range, totalSize) : null;
+
+      if (requested === 'unsatisfiable') {
+        // RFC 9110 §14.4: an unsatisfiable range is answered 416 with the current extent. The
+        // headers set above survive the error handler, so this reply already carries them.
+        void reply.header('content-range', `bytes */${totalSize}`);
+        throw new AppError('RANGE_NOT_SATISFIABLE', {
+          detail: `The requested range is outside the object (0-${totalSize - 1}).`,
+        });
+      }
+
+      const read = await provider.openReadStream(object.ref, requested ?? undefined);
       void reply.header('content-type', file.mimeType);
       void reply.header('content-length', String(read.length));
       void reply.header(
@@ -165,9 +182,13 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         contentDisposition(file.originalFilename, file.mimeType),
       );
       void reply.header('cache-control', 'private, no-store');
-      // Ranged reads are not advertised until a provider supports them; `Range` requests are
-      // answered with the whole object rather than a wrong partial one.
-      void reply.header('accept-ranges', 'none');
+      if (read.range !== null) {
+        void reply.header(
+          'content-range',
+          `bytes ${read.range.start}-${read.range.endInclusive}/${totalSize}`,
+        );
+        void reply.status(206);
+      }
       return reply.send(Readable.from(read.stream));
     },
   );

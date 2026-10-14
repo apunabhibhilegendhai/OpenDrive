@@ -430,10 +430,11 @@ mechanism and the 20 MiB per-part read-back ceiling are therefore confirmed end-
 
 **Still not verified (honest):** no object anywhere near the 2 GiB target has been stored, so
 `maxFileSizeVerified` stays `false` — the mechanism is proven, the ceiling is not. Durability is not
-guaranteed (`guaranteedDurability: false`, `permanentRetention: false`), ranged reads and direct
-download URLs are not supported (`rangedRead: false`; a Telegram file link would embed the bot
-token), and deletion is not provably final (`deleteIsFinal: false`) — see D29, which records that
-Telegram keeps serving a deleted file and how the provider compensates.
+guaranteed (`guaranteedDurability: false`, `permanentRetention: false`), direct download URLs are
+not supported (`directDownloadUrl: false`; a Telegram file link would embed the bot token), and
+deletion is not provably final (`deleteIsFinal: false`) — see D29, which records that Telegram
+keeps serving a deleted file and how the provider compensates. Ranged reads are supported as of
+D40.
 
 **Revisit when:** an object near the 2 GiB target is stored and read back (ideally through a
 self-hosted Local Bot API server, §3.1), at which point `maxFileSizeVerified` can be enabled and the
@@ -782,3 +783,41 @@ until finalize, one document is sent, a failed send keeps the spool for a retry,
 the ceiling still uses multipart), `apps/api/src/storage/finalize-jobs.test.ts` (one attempt per
 upload, join-not-restart, retry after failure), and `apps/web/src/state/uploadQueue.retry.test.ts`
 plus the web client's `202` handling.
+
+## D40. Byte ranges are served per part, and an unsatisfiable range is a real `416`
+
+**Chosen:** `StorageProvider.openReadStream(ref, range)` is honoured by the Telegram provider.
+`rangedRead` flips to `true`, and a range is mapped onto the parts that cover it: parts before the
+window are skipped without a request, and the parts at either edge are downloaded for only the
+sub-range they contribute (`readPartRange` → `openPartStream(part, subRange)` →
+`TelegramHttpTransport.download(filePath, range)`). The transport sends a `Range` header; a `206`
+body is streamed as-is, and a server that answers `200` (ignoring `Range`) has its body trimmed to
+the requested window, so the caller always receives exactly the bytes it asked for and never the
+whole object. The content route parses a single `bytes=` range (`parseRangeHeader`), answers `206`
+with `Content-Range`/`Content-Length` and `Accept-Ranges: bytes`, serves the whole object `200` when
+there is no range (or multiple ranges, or a non-`bytes` unit), and answers an out-of-bounds range
+`416` with `Content-Range: bytes */<size>` — a new `RANGE_NOT_SATISFIABLE` error code (status 416) in
+the shared error taxonomy.
+
+**Why:** downloading a stored object as one stream through the edge proxy hit Cloudflare's ~100 s
+origin timeout for a ~862 MiB file (`524`, HTML body) even though the bytes were fine — the same
+failure mode that motivated the async finalize (D39). Ranged reads let a media element seek and
+stream, and let a client fetch a large object in bounded, retryable windows instead of one
+all-or-nothing response. The web client now does exactly that: `downloadFileContent` requests
+64 MiB windows and writes each to disk in turn (or buffers them into one Blob where the File System
+Access API is absent), retrying a window that fails transiently rather than restarting the file.
+
+**Honest limits:** only a single range is served; a multi-range request is answered with the whole
+object rather than `multipart/byteranges`, which no client here needs and which would require
+fetching parts out of order. Range correctness depends on the locator's recorded part sizes, so a
+part whose size on Telegram differs from the locator surfaces as a read failure rather than silent
+corruption. The Blob fallback still holds the whole object in memory — the windowing removes the
+long-request timeout, not the platform's memory ceiling.
+
+**Guarded by:** the provider contract suite's `rangedRead` branch (now active for Telegram),
+`apps/api/src/storage/providers/telegram.test.ts` (a range spanning parts fetches only the
+overlapping parts and only their needed sub-ranges; an invalid range is `INVALID_REQUEST`),
+`apps/api/src/routes/range.test.ts` (the header parser), `tests/integration/src/uploads.test.ts`
+(`206`, `Content-Range`, byte-exact body, `200` without a range, and `416` past the end), and
+`apps/web/src/lib/files/download.test.ts` (window sizing and order, retry, whole-object fallback,
+and the buffered path).

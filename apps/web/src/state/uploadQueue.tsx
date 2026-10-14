@@ -9,7 +9,12 @@ import {
   type ReactNode,
 } from 'react';
 import type { LimitsResponse } from '@opendrive/shared';
-import { NetworkError, describeFailure, isApiError, isAuthFailure } from '../lib/api/errors.js';
+import {
+  describeFailure,
+  isApiError,
+  isAuthFailure,
+  isTransientFailure,
+} from '../lib/api/errors.js';
 import type { ApiClient, CompleteUploadOutcome } from '../lib/api/client.js';
 import { useApi, useSession } from '../lib/auth/session.js';
 import { sha256HexOfBlob } from '../lib/upload/checksum.js';
@@ -89,9 +94,6 @@ function waitForFinalize(signal: AbortSignal): Promise<void> {
   return wait(FINALIZE_POLL_INTERVAL_MS, signal);
 }
 
-/** Statuses worth retrying: the edge answered, but the origin did not serve the part. */
-const RETRYABLE_PART_STATUSES = new Set([500, 502, 503, 504]);
-
 /**
  * Attempts per part, including the first send.
  *
@@ -114,14 +116,6 @@ function retryDelay(baseMs: number, attempt: number): number {
   if (baseMs <= 0) return 0;
   const grown = Math.min(baseMs * 2 ** (attempt - 1), PART_RETRY_MAX_DELAY_MS);
   return Math.round(grown * (0.7 + Math.random() * 0.6));
-}
-
-/** A failure that re-sending the same, identical request can recover from. */
-function isTransientFailure(error: unknown): boolean {
-  return (
-    error instanceof NetworkError ||
-    (isApiError(error) && (RETRYABLE_PART_STATUSES.has(error.status) || error.status === 429))
-  );
 }
 
 /**

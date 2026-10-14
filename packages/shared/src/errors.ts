@@ -13,6 +13,7 @@ export const ERROR_DEFINITIONS = {
   CONFLICT: { status: 409, title: 'Conflicting state' },
   PAYLOAD_TOO_LARGE: { status: 413, title: 'Payload too large' },
   UNSUPPORTED_MEDIA_TYPE: { status: 415, title: 'Unsupported media type' },
+  RANGE_NOT_SATISFIABLE: { status: 416, title: 'Range not satisfiable' },
   INTEGRITY_CHECK_FAILED: { status: 422, title: 'Integrity check failed' },
   RATE_LIMITED: { status: 429, title: 'Rate limit exceeded' },
   QUOTA_EXCEEDED: { status: 429, title: 'Quota exceeded' },

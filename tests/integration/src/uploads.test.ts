@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sha256HexOfBytes } from '@opendrive/shared';
+import { problemDetailsSchema, sha256HexOfBytes } from '@opendrive/shared';
 import type { FileRecord } from '@opendrive/shared';
 import {
   bearer,
@@ -145,6 +145,43 @@ describe('upload workflow', () => {
     expect(download.statusCode).toBe(200);
     expect(download.headers['content-length']).toBe(String(content.byteLength));
     expect(download.rawPayload.equals(content)).toBe(true);
+  });
+
+  it('serves a byte range as 206 and rejects a range past the end with 416', async () => {
+    const account = await createAccount(h.sql);
+    const content = Buffer.alloc(256);
+    for (let index = 0; index < content.byteLength; index += 1) content[index] = index % 256;
+    const { fileId } = await uploadOnePart(account.token, 'window.bin', content);
+
+    const partial = await h.server.inject({
+      method: 'GET',
+      url: `/api/v1/files/${fileId}/content`,
+      headers: { ...bearer(account.token), range: 'bytes=10-19' },
+    });
+    expect(partial.statusCode).toBe(206);
+    expect(partial.headers['accept-ranges']).toBe('bytes');
+    expect(partial.headers['content-range']).toBe(`bytes 10-19/${content.byteLength}`);
+    expect(partial.headers['content-length']).toBe('10');
+    expect(partial.rawPayload.equals(content.subarray(10, 20))).toBe(true);
+
+    // The whole object is still served (200) when there is no range.
+    const whole = await h.server.inject({
+      method: 'GET',
+      url: `/api/v1/files/${fileId}/content`,
+      headers: bearer(account.token),
+    });
+    expect(whole.statusCode).toBe(200);
+    expect(whole.headers['content-length']).toBe(String(content.byteLength));
+
+    // A range that starts at or past the end is unsatisfiable, not a wrong partial answer.
+    const unsatisfiable = await h.server.inject({
+      method: 'GET',
+      url: `/api/v1/files/${fileId}/content`,
+      headers: { ...bearer(account.token), range: `bytes=${content.byteLength}-` },
+    });
+    expect(unsatisfiable.statusCode).toBe(416);
+    expect(unsatisfiable.headers['content-range']).toBe(`bytes */${content.byteLength}`);
+    expect(problemDetailsSchema.parse(unsatisfiable.json()).code).toBe('RANGE_NOT_SATISFIABLE');
   });
 
   it('previews safe media inline and forces everything else to download', async () => {

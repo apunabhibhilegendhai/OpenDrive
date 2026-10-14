@@ -397,8 +397,11 @@ export class TelegramStorageProvider implements StorageProvider {
       singleShotUpload: true,
       // Staged part state lives in this process only; a restart loses in-progress uploads.
       resumableUpload: false,
-      // Telegram file URLs are whole-file downloads; there is no server-side range read.
-      rangedRead: false,
+      // A range is served by requesting that window from the one part (or the few parts) that
+      // cover it; the Bot API file endpoint used by the transport supports `Range`, and a server
+      // that ignores it is trimmed in the transport, so a partial read never fetches the whole
+      // object. See `openReadStream` / `readPartRange`.
+      rangedRead: true,
       // A Telegram file URL embeds the bot token, so direct links are never issued.
       directDownloadUrl: false,
       // Telegram performs no integrity checking of its own.
@@ -1012,10 +1015,13 @@ export class TelegramStorageProvider implements StorageProvider {
   }
 
   /** Resolves a part's download stream, mapping Telegram failures into provider errors. */
-  private async openPartStream(part: { messageId: number; fileId: string }): Promise<ByteStream> {
+  private async openPartStream(
+    part: { messageId: number; fileId: string },
+    range?: ByteRange,
+  ): Promise<ByteStream> {
     try {
       const file = await this.getFileWithRetry(part.fileId);
-      return await this.transport.download(file.filePath);
+      return await this.transport.download(file.filePath, range);
     } catch (error) {
       this.throwReadFailure(part, error);
     }
@@ -1172,14 +1178,54 @@ export class TelegramStorageProvider implements StorageProvider {
   async openReadStream(ref: StoreObjectRef, range?: ByteRange): Promise<ReadResult> {
     const locator = decodeLocator(ref.locator);
     if (this.deleted.has(ref.locator)) throw objectNotFound();
-    if (range !== undefined) {
-      assertCapability(this, 'rangedRead', 'openReadStream with a byte range');
+    if (range === undefined) {
+      return {
+        stream: this.readParts(locator.parts),
+        length: locator.size,
+        range: null,
+      };
+    }
+    assertCapability(this, 'rangedRead', 'openReadStream with a byte range');
+    if (range.start < 0 || range.endInclusive < range.start || range.endInclusive >= locator.size) {
+      throw new AppError('INVALID_REQUEST', {
+        detail: `Range ${range.start}-${range.endInclusive} is outside the object (0-${locator.size - 1}).`,
+      });
     }
     return {
-      stream: this.readParts(locator.parts),
-      length: locator.size,
-      range: null,
+      stream: this.readPartRange(locator.parts, range),
+      length: range.endInclusive - range.start + 1,
+      range,
     };
+  }
+
+  /**
+   * Yields exactly the bytes in `range` by walking the parts that cover it. Parts before the
+   * window are skipped without a request; the parts at either edge are asked for only the
+   * sub-range they contribute, so a partial read of a multi-GiB object never pulls the whole
+   * object through memory or the network.
+   */
+  private async *readPartRange(parts: readonly LocatorPart[], range: ByteRange): ByteStream {
+    let base = 0;
+    for (const part of parts) {
+      if (base > range.endInclusive) break;
+      const partEnd = base + part.s - 1;
+      if (partEnd >= range.start) {
+        const from = Math.max(range.start, base) - base;
+        const to = Math.min(range.endInclusive, partEnd) - base;
+        const wholePart = from === 0 && to === part.s - 1;
+        const ref = { messageId: part.m, fileId: part.f };
+        const stream = await this.openPartStream(
+          ref,
+          wholePart ? undefined : { start: from, endInclusive: to },
+        );
+        try {
+          for await (const chunk of stream) yield chunk;
+        } catch (error) {
+          this.throwReadFailure(ref, error);
+        }
+      }
+      base += part.s;
+    }
   }
 
   private async *readParts(parts: readonly LocatorPart[]): ByteStream {

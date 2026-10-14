@@ -59,6 +59,23 @@ export function isAuthFailure(error: unknown): boolean {
   );
 }
 
+/** Statuses worth retrying: the edge answered, but the origin did not serve the request. */
+const RETRYABLE_STATUSES = new Set([500, 502, 503, 504]);
+
+/**
+ * A failure that re-sending the same, identical request can recover from.
+ *
+ * Used by the upload queue and the windowed download: both retry the exact same request, so the
+ * only honest distinction is "the edge/origin hiccupped" (retry) versus "the server said no"
+ * (final). A `401`/`403` is never transient, and neither is a contract or validation failure.
+ */
+export function isTransientFailure(error: unknown): boolean {
+  return (
+    error instanceof NetworkError ||
+    (isApiError(error) && (RETRYABLE_STATUSES.has(error.status) || error.status === 429))
+  );
+}
+
 /** Build an `ApiError` from a response body that may or may not match the problem schema. */
 export function problemFrom(status: number, payload: unknown): ApiError {
   const parsed = problemDetailsResponseSchema.safeParse(payload);

@@ -23,6 +23,7 @@ import {
 } from '@opendrive/shared';
 import type {
   ApiKeyRecord,
+  ByteRange,
   CreateFolderRequest,
   CreateShareRequest,
   FileRecord,
@@ -279,10 +280,20 @@ export class ApiClient {
   /**
    * Content download. Returns the raw response so the caller can stream it to disk where the
    * browser supports it, instead of buffering the object in memory here.
+   *
+   * When `range` is given the request carries a `Range` header and the API answers `206` with just
+   * that window; that is what lets a large download proceed in bounded, retryable pieces instead
+   * of one all-or-nothing response.
    */
-  async openContent(fileId: string, signal?: AbortSignal): Promise<Response> {
+  async openContent(
+    fileId: string,
+    options: { signal?: AbortSignal; range?: ByteRange } = {},
+  ): Promise<Response> {
     const response = await this.#send(`${API_PREFIX}/files/${fileId}/content`, {
-      ...(signal ? { signal } : {}),
+      ...(options.range === undefined
+        ? {}
+        : { headers: { range: `bytes=${options.range.start}-${options.range.endInclusive}` } }),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     if (!response.ok) {
       throw problemFrom(response.status, await readJson(response));

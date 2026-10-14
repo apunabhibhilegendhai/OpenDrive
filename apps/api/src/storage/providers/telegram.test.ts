@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { newId, sha256HexOfBytes } from '@opendrive/shared';
-import type { ByteStream } from '@opendrive/shared';
+import type { ByteRange, ByteStream } from '@opendrive/shared';
 import { describeStorageProviderContract } from '@opendrive/shared/storage/testing';
 import { TelegramStorageProvider } from './telegram.js';
 import type { TelegramStorageProviderOptions } from './telegram.js';
@@ -90,6 +90,11 @@ class FakeTelegramTransport implements TelegramTransport {
   alwaysFailUploads = false;
   payloadTooLarge = false;
   uploadAttempts = 0;
+  /**
+   * Every `download` call, in order, with the range it was asked for. Lets a test assert that a
+   * partial read only fetched the parts it needed.
+   */
+  readonly downloadCalls: { filePath: string; range?: ByteRange }[] = [];
 
   async sendDocument(input: TelegramSendDocumentInput): Promise<TelegramUploadReceipt> {
     this.uploadAttempts += 1;
@@ -146,12 +151,14 @@ class FakeTelegramTransport implements TelegramTransport {
     };
   }
 
-  async download(filePath: string): Promise<ByteStream> {
+  async download(filePath: string, range?: ByteRange): Promise<ByteStream> {
+    this.downloadCalls.push(range === undefined ? { filePath } : { filePath, range });
     const file = [...this.files.values()].find((candidate) => candidate.filePath === filePath);
     if (file === undefined) {
       throw new TelegramNotFoundError(`download: path ${filePath} not found`, 404);
     }
-    const bytes = file.bytes;
+    const bytes =
+      range === undefined ? file.bytes : file.bytes.subarray(range.start, range.endInclusive + 1);
     const shouldFail = this.alwaysFailDownloads || this.transientDownloadFailures > 0;
     if (!this.alwaysFailDownloads && this.transientDownloadFailures > 0) {
       this.transientDownloadFailures -= 1;
@@ -243,6 +250,63 @@ describe('Telegram storage provider', () => {
     const metadata = await restarted.getMetadata(stored.ref);
     expect(metadata.sizeBytes).toBe(payload.byteLength);
     expect(metadata.checksumSha256).toBe(expected);
+  });
+
+  it('serves a byte range spanning parts without fetching the parts outside it', async () => {
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport });
+    const partSize = 256;
+    const payload = new Uint8Array(partSize * 4);
+    for (let index = 0; index < payload.byteLength; index += 1) payload[index] = (index * 7) % 251;
+
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, partSize));
+    for (let partNumber = 1; partNumber <= 4; partNumber += 1) {
+      await provider.uploadPart(session, {
+        partNumber,
+        source: payload.subarray((partNumber - 1) * partSize, partNumber * partSize),
+        sizeBytes: partSize,
+      });
+    }
+    const stored = await provider.finalizeUpload(session);
+
+    // Parts cover 0-255, 256-511, 512-767 and 768-1023; this window needs the first two only.
+    transport.downloadCalls.length = 0;
+    const range = { start: 200, endInclusive: 449 };
+    const read = await provider.openReadStream(stored.ref, range);
+
+    expect(read.length).toBe(250);
+    expect(read.range).toEqual(range);
+    const window = await drain(read.stream);
+    expect(Buffer.from(window).equals(Buffer.from(payload.subarray(200, 450)))).toBe(true);
+
+    // Only the two overlapping parts were fetched, and only for the bytes they contribute.
+    expect(transport.downloadCalls).toHaveLength(2);
+    expect(transport.downloadCalls[0]?.range).toEqual({ start: 200, endInclusive: 255 });
+    expect(transport.downloadCalls[1]?.range).toEqual({ start: 0, endInclusive: 193 });
+  });
+
+  it('rejects a range outside the object with INVALID_REQUEST', async () => {
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport });
+    const payload = new Uint8Array(512).fill(3);
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength));
+    const stored = await provider.uploadWholeObject({
+      session,
+      source: (async function* generate(): ByteStream {
+        yield payload;
+      })(),
+      sizeBytes: payload.byteLength,
+    });
+
+    await expect(
+      provider.openReadStream(stored.ref, { start: 0, endInclusive: payload.byteLength }),
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    await expect(
+      provider.openReadStream(stored.ref, { start: -1, endInclusive: 10 }),
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
+    await expect(
+      provider.openReadStream(stored.ref, { start: 20, endInclusive: 10 }),
+    ).rejects.toMatchObject({ code: 'INVALID_REQUEST' });
   });
 
   it('destroys a multipart object by deleting every staged message', async () => {
