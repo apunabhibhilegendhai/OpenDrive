@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ByteRange } from '@opendrive/shared';
 import type { ApiClient } from '../api/client.js';
-import { NetworkError } from '../api/errors.js';
+import { ApiError, NetworkError } from '../api/errors.js';
 import { downloadFileContent } from './download.js';
 
 /** A deterministic byte sequence, so a window taken from the wrong offset cannot pass by luck. */
@@ -229,5 +229,124 @@ describe('downloadFileContent', () => {
     expect(outcome).toEqual({ kind: 'saved', filename: 'x.bin', streamed: false });
     expect(ranges).toHaveLength(3);
     expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the bytes a window delivered before it was cut, and continues from there', async () => {
+    const source = sequence(12);
+    const ranges: ByteRange[] = [];
+    let calls = 0;
+    const client = {
+      openContent: async (_fileId: string, options: { range?: ByteRange } = {}) => {
+        const range = options.range ?? { start: 0, endInclusive: source.byteLength - 1 };
+        ranges.push(range);
+        calls += 1;
+        if (calls !== 1) {
+          return new Response(body(source.subarray(range.start, range.endInclusive + 1)), {
+            status: 206,
+          });
+        }
+        // The first window is cut after five of the twelve bytes it promised.
+        let pulls = 0;
+        const cut = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls += 1;
+            if (pulls === 1) controller.enqueue(source.subarray(0, 5));
+            else controller.error(new Error('edge cut'));
+          },
+        });
+        return new Response(cut, { status: 206 });
+      },
+    } as unknown as ApiClient;
+    const picker = installPicker();
+    try {
+      const outcome = await downloadFileContent(client, target(source.byteLength), undefined, {
+        windowBytes: 12,
+        retryBaseDelayMs: 0,
+      });
+      expect(outcome.kind).toBe('saved');
+      expect(ranges).toEqual([
+        { start: 0, endInclusive: 11 },
+        { start: 5, endInclusive: 11 },
+      ]);
+      expect(concat(picker.written)).toEqual(source);
+    } finally {
+      picker.restore();
+    }
+  });
+
+  it('retries an edge timeout (524) instead of failing the download', async () => {
+    const source = sequence(10);
+    const { client } = rangedClient(source);
+    const original = client.openContent.bind(client);
+    let calls = 0;
+    client.openContent = async (fileId, options) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ApiError({
+          status: 524,
+          code: 'UNEXPECTED_RESPONSE',
+          detail: 'origin timed out',
+        });
+      }
+      return original(fileId, options);
+    };
+    const picker = installPicker();
+    try {
+      const outcome = await downloadFileContent(client, target(source.byteLength), undefined, {
+        windowBytes: 10,
+        retryBaseDelayMs: 0,
+      });
+      expect(outcome.kind).toBe('saved');
+      expect(calls).toBe(2);
+      expect(concat(picker.written)).toEqual(source);
+    } finally {
+      picker.restore();
+    }
+  });
+
+  it('cuts a stalled window at the time budget and keeps the bytes that did arrive', async () => {
+    const source = sequence(10);
+    const ranges: ByteRange[] = [];
+    let calls = 0;
+    const client = {
+      openContent: async (_fileId: string, options: { range?: ByteRange } = {}) => {
+        const range = options.range ?? { start: 0, endInclusive: source.byteLength - 1 };
+        ranges.push(range);
+        calls += 1;
+        if (calls !== 1) {
+          return new Response(body(source.subarray(range.start, range.endInclusive + 1)), {
+            status: 206,
+          });
+        }
+        // The first window sends four bytes and then goes silent: no further chunk ever arrives.
+        let pulls = 0;
+        const stalled = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls += 1;
+            if (pulls === 1) controller.enqueue(source.subarray(0, 4));
+            else return new Promise<void>(() => {});
+          },
+        });
+        return new Response(stalled, { status: 206 });
+      },
+    } as unknown as ApiClient;
+    const picker = installPicker();
+    try {
+      const startedAt = Date.now();
+      const outcome = await downloadFileContent(client, target(source.byteLength), undefined, {
+        windowBytes: 10,
+        windowBudgetMs: 50,
+        retryBaseDelayMs: 0,
+      });
+      expect(outcome.kind).toBe('saved');
+      expect(Date.now() - startedAt).toBeLessThan(3000);
+      expect(ranges).toEqual([
+        { start: 0, endInclusive: 9 },
+        { start: 4, endInclusive: 9 },
+      ]);
+      expect(concat(picker.written)).toEqual(source);
+    } finally {
+      picker.restore();
+    }
   });
 });

@@ -59,8 +59,14 @@ export function isAuthFailure(error: unknown): boolean {
   );
 }
 
-/** Statuses worth retrying: the edge answered, but the origin did not serve the request. */
-const RETRYABLE_STATUSES = new Set([500, 502, 503, 504]);
+/**
+ * Statuses worth retrying: the edge answered, but the origin did not serve the request.
+ *
+ * `408` is a request timeout; `524` is the edge's own "origin took too long" and is the one a large
+ * ranged download actually meets (`520`-`523` are its siblings for an unreachable or unresponsive
+ * origin). A `525`/`526` is a TLS misconfiguration, which a retry cannot fix, so it is left out.
+ */
+const RETRYABLE_STATUSES = new Set([408, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 /**
  * A failure that re-sending the same, identical request can recover from.

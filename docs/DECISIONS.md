@@ -803,9 +803,11 @@ the shared error taxonomy.
 origin timeout for a ~862 MiB file (`524`, HTML body) even though the bytes were fine — the same
 failure mode that motivated the async finalize (D39). Ranged reads let a media element seek and
 stream, and let a client fetch a large object in bounded, retryable windows instead of one
-all-or-nothing response. The web client now does exactly that: `downloadFileContent` requests
-64 MiB windows and writes each to disk in turn (or buffers them into one Blob where the File System
-Access API is absent), retrying a window that fails transiently rather than restarting the file.
+all-or-nothing response. The web client now does exactly that: `downloadFileContent` writes the
+object to disk window by window (or buffers it into one Blob where the File System Access API is
+absent), retrying a window that fails transiently rather than restarting the file. The window's size
+is only a ceiling - each request is time-boxed, so a slow object simply fills less of it and the next
+request continues (D42).
 
 **Honest limits:** only a single range is served; a multi-range request is answered with the whole
 object rather than `multipart/byteranges`, which no client here needs and which would require
@@ -820,7 +822,8 @@ overlapping parts and only their needed sub-ranges; an invalid range is `INVALID
 `apps/api/src/routes/range.test.ts` (the header parser), `tests/integration/src/uploads.test.ts`
 (`206`, `Content-Range`, byte-exact body, `200` without a range, and `416` past the end), and
 `apps/web/src/lib/files/download.test.ts` (window sizing and order, retry, whole-object fallback,
-and the buffered path).
+the buffered path, keeping a window's bytes when it is cut mid-body or stalls, and retrying an edge
+`524`).
 
 ## D41. A failed upload releases its session, so "try again" is actually possible
 
@@ -848,3 +851,35 @@ client hygiene, not server-side resumption.
 **Guarded by:** `apps/web/src/routes/DriveRoute.test.tsx` ("gives the failed session back, so the
 next upload is not refused"): a part refused with `413` ends the upload and the client issues the
 `DELETE`; the live API was also driven through six release-then-retry cycles, every one accepted.
+
+## D42. A download window is time-boxed, and the edge's own 5xx are retried
+
+**Chosen:** a ranged download window is bounded by wall-clock time, not only by size.
+`downloadFileContent` asks for up to `DOWNLOAD_WINDOW_BYTES` (64 MiB) but reads for at most
+`DOWNLOAD_WINDOW_BUDGET_MS` (30 s) per request: whatever bytes arrived are written, the offset
+advances by exactly those bytes, and the next request continues from there. A read that fails after
+some bytes landed is not treated as an error - those bytes are a contiguous prefix of the requested
+range - so only a failure that delivered nothing is retried, and then with backoff
+(`DOWNLOAD_WINDOW_ATTEMPTS` = 6). The client also treats an edge timeout (`524`) and its
+`408`/`520`-`523`/`5xx` siblings as transient in `isTransientFailure`, so that retry actually runs.
+
+**Why:** the edge proxy in front of the API cuts a request at ~100 s and answers `524`; an 862 MiB
+object died on its very first 64 MiB window because the Local Bot API was still pulling that document
+from Telegram and streamed it slower than the fixed window assumed. A fixed byte window cannot know
+the throughput, so it is either too large (wait ~100 s, then `524`) or too small (a request per few
+MiB, forever). Time-boxing removes the failure mode: every request finishes in ~30 s, well inside the
+edge timeout, and a download always moves forward however poor the throughput. Reading to a deadline
+rather than waiting for an error is also what lets the client keep the bytes it already has instead of
+discarding them with the failed request.
+
+**Honest limits:** a slow object becomes many requests, each paying a fresh round trip through the
+edge; the budget bounds one request's time, not the download's total. A stalled request that delivered
+nothing spends the full budget before the retry, and after six attempts the download fails rather than
+looping forever. The unranged whole-object fallback (a server that ignores `Range`) cannot be resumed,
+so it is read without a budget and still depends on the edge not cutting it - which is why the content
+route always answers `206` for a range (D40).
+
+**Guarded by:** `apps/web/src/lib/files/download.test.ts` ("keeps the bytes a window delivered before
+it was cut, and continues from there", "cuts a stalled window at the time budget and keeps the bytes
+that did arrive", "retries an edge timeout (524) instead of failing the download"), and
+`apps/web/src/lib/api/errors.ts`'s `RETRYABLE_STATUSES`.
