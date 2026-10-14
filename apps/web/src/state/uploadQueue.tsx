@@ -281,10 +281,10 @@ export function UploadQueueProvider({
 
         let uploadedBytes = 0;
         const receivedParts = new Set<number>();
-        // The inner loop sends the missing parts once. If a part uses up every retry, the outer
-        // round resumes from what the server actually holds instead of failing the whole upload.
+        // The inner loop sends the missing parts once. Only a part that is genuinely transient and
+        // has used up every retry starts another round; anything else is reported as it happened.
         for (let round = 1; ; round += 1) {
-          let failedPart: Error | undefined;
+          let resuming = false;
           for (const part of partsPlan.parts) {
             if (receivedParts.has(part.partNumber)) continue;
             const blob = file.slice(part.start, part.end);
@@ -305,17 +305,24 @@ export function UploadQueueProvider({
                 controller.signal,
               );
             } catch (error) {
-              failedPart = error instanceof Error ? error : new Error(String(error));
+              // A cancel or a definitive refusal (a refused size, a validation error, a dead
+              // session) is final and rethrown untouched, so the queue reports the real reason.
+              if (
+                controller.signal.aborted ||
+                isAuthFailure(error) ||
+                !isTransientFailure(error) ||
+                round >= MAX_PART_ROUNDS
+              ) {
+                throw error;
+              }
+              resuming = true;
               break;
             }
             receivedParts.add(part.partNumber);
             uploadedBytes = part.end;
             patch(item.id, { uploadedBytes });
           }
-          if (failedPart === undefined) break;
-          if (round >= MAX_PART_ROUNDS || controller.signal.aborted || isAuthFailure(failedPart)) {
-            throw failedPart;
-          }
+          if (!resuming) break;
           // Ask the server how far it actually got, keep those parts, pause for the edge to
           // recover, then resume only the ones still missing.
           const progress = await api
