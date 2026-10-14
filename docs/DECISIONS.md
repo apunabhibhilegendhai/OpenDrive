@@ -883,3 +883,42 @@ route always answers `206` for a range (D40).
 it was cut, and continues from there", "cuts a stalled window at the time budget and keeps the bytes
 that did arrive", "retries an edge timeout (524) instead of failing the download"), and
 `apps/web/src/lib/api/errors.ts`'s `RETRYABLE_STATUSES`.
+
+## D43. An inline preview is a short-lived, file-scoped signed URL the browser streams directly
+
+**Chosen:** `POST /api/v1/files/:fileId/preview` (owner-authenticated) returns `{ path, expiresAt }`,
+where `path` is `/api/v1/files/:fileId/content?preview=<token>` and is relative to the API origin.
+The token is `base64url("<fileId>.<expEpochSec>")` + `"."` + a hex HMAC-SHA256 over exactly that
+encoded payload; the key is HKDF-SHA256 (`info` = `opendrive/preview-url/v1`) of
+`PREVIEW_SIGNING_SECRET`, falling back to `IP_HASH_SECRET`, with a TTL of
+`PREVIEW_TOKEN_TTL_SECONDS` (default 3600). The content route accepts the token only when no bearer
+identity is present, only for the file id it names, only before its expiry, and only when the file's
+effective type is in the inline allow-list (`isInlinePreviewable`: raster image, audio or video;
+`image/svg+xml` is excluded). Such a response is served `inline` with
+`cross-origin-resource-policy: cross-origin`; anything else answers 409 (not previewable) or 503 (no
+signing secret). `security.ts` no longer overwrites a CORP a route set for itself, and `server.ts`
+redacts the `preview` query parameter from request logs.
+
+**Why:** a browser's `<img>`/`<video>`/`<audio>` cannot attach an `Authorization` header, so "show
+the file in the page" needs either a URL-borne credential or fetching the whole object into memory
+and handing the element a blob URL. The second is unusable for a large video: it buffers the entire
+file in the tab and cannot seek until the download finishes. A signed URL lets the element stream and
+seek through the provider directly, reusing the range machinery of D40. Scope and expiry are what make
+a URL credential acceptable here: it names one file, it dies on its own, and even a valid one is
+refused for a type the server would not render inline anyway. Deriving the key with HKDF keeps it
+distinct from the address-hashing secret even when it is configured from it.
+
+**Honest limits:** the token lives in the URL, so it can leak through a `Referer` header, browser
+history or a log line — a short TTL and log redaction reduce that, they do not remove it. Previews
+need a configured secret: with both `PREVIEW_SIGNING_SECRET` and `IP_HASH_SECRET` unset the mint
+route answers 503 rather than signing under a default key. Text and code are previewed by reading the
+object through the authenticated client and rendering it as text, capped at 1 MiB; a larger text file
+is only offered as a download. PDF and SVG are deliberately not previewed (SVG is scriptable; PDF is
+served as an attachment by choice), and the interface says so rather than rendering them.
+
+**Guarded by:** `apps/api/src/preview-tokens.test.ts` (mint/verify, expiry, cross-file, tamper, wrong
+secret), `tests/integration/src/preview.test.ts` (the signed URL streams without a credential and
+sets cross-origin CORP; a token is scoped to one file and refused for a sibling type; a credentialed
+download keeps same-origin; no secret answers 503), and `apps/web/src/routes/DriveRoute.test.tsx`
+("shows an image through a signed preview link the API minted", "reports a refused preview instead of
+showing a broken element").

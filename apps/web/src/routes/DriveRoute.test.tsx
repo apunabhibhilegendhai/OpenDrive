@@ -25,6 +25,7 @@ const NOW = '2026-10-12T12:00:00.000Z';
 const PART_PATH = /^\/api\/v1\/uploads\/upl_[0-9a-z]+\/parts\/\d+$/;
 const COMPLETE_PATH = /^\/api\/v1\/uploads\/upl_[0-9a-z]+\/complete$/;
 const CONTENT_PATH = /^\/api\/v1\/files\/file_[0-9a-z]+\/content$/;
+const PREVIEW_PATH = /^\/api\/v1\/files\/file_[0-9a-z]+\/preview$/;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -431,6 +432,96 @@ describe('deleting', () => {
     expect(await screen.findByText(/not allowed to do that/)).toBeTruthy();
     expect(screen.getByText('chart.png')).toBeTruthy();
     expect(screen.queryByText(/chart\.png deleted\./)).toBeNull();
+  });
+});
+
+describe('preview', () => {
+  it('shows an image through a signed preview link the API minted', async () => {
+    const routes: FakeRoute[] = [
+      ...defaultRoutes({ files: [fileFixture({ filename: 'chart.png' })] }),
+      {
+        method: 'POST',
+        path: PREVIEW_PATH,
+        respond: () => ({
+          status: 200,
+          body: {
+            path: '/api/v1/files/file_00000000000000000000000001/content?preview=abc.def',
+            expiresAt: '2026-10-12T13:00:00.000Z',
+          },
+        }),
+      },
+    ];
+    renderApp({ session: sessionFixture(), routes });
+
+    await settle(() => screen.findByText('chart.png'));
+    fireEvent.click(screen.getByRole('button', { name: 'chart.png' }));
+
+    const image = await screen.findByRole('img', { name: 'chart.png' });
+    expect(image.getAttribute('src')).toBe(
+      '/api/v1/files/file_00000000000000000000000001/content?preview=abc.def',
+    );
+    expect(await screen.findByRole('link', { name: /open in a new tab/i })).toBeTruthy();
+  });
+
+  it('shows a small text file read through the authenticated client', async () => {
+    const routes: FakeRoute[] = [
+      ...defaultRoutes({
+        files: [fileFixture({ filename: 'notes.txt', mimeType: 'text/plain', sizeBytes: 11 })],
+      }),
+      {
+        method: 'GET',
+        path: CONTENT_PATH,
+        respond: () => ({ status: 200, text: 'hello world', contentType: 'text/plain' }),
+      },
+    ];
+    renderApp({ session: sessionFixture(), routes });
+
+    await settle(() => screen.findByText('notes.txt'));
+    fireEvent.click(screen.getByRole('button', { name: 'notes.txt' }));
+
+    expect(await screen.findByText('hello world')).toBeTruthy();
+  });
+
+  it('says plainly that a type with no inline preview cannot be previewed, and never asks', async () => {
+    const routes: FakeRoute[] = [
+      ...defaultRoutes({
+        files: [fileFixture({ filename: 'bundle.zip', mimeType: 'application/zip' })],
+      }),
+    ];
+    const { server } = renderApp({ session: sessionFixture(), routes });
+
+    await settle(() => screen.findByText('bundle.zip'));
+    fireEvent.click(screen.getByRole('button', { name: 'bundle.zip' }));
+
+    expect(await screen.findByText(/no inline preview/i)).toBeTruthy();
+    // The client never asks the API to preview a family it cannot render.
+    expect(server.calls.some((call) => call.path.endsWith('/preview'))).toBe(false);
+  });
+
+  it('reports a refused preview instead of showing a broken element', async () => {
+    const routes: FakeRoute[] = [
+      ...defaultRoutes({
+        files: [fileFixture({ filename: 'vector.svg', mimeType: 'image/svg+xml' })],
+      }),
+      {
+        method: 'POST',
+        path: PREVIEW_PATH,
+        respond: () =>
+          problem(
+            409,
+            'CONFLICT',
+            'This file type is not rendered inline, so it cannot be previewed.',
+          ),
+      },
+    ];
+    renderApp({ session: sessionFixture(), routes });
+
+    await settle(() => screen.findByText('vector.svg'));
+    fireEvent.click(screen.getByRole('button', { name: 'vector.svg' }));
+
+    expect(await screen.findByText(/not rendered inline/i)).toBeTruthy();
+    // No element was pointed at a URL the API refused: the logo is the only remaining image.
+    expect(screen.queryByRole('img', { name: 'vector.svg' })).toBeNull();
   });
 });
 

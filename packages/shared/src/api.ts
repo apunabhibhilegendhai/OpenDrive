@@ -246,6 +246,25 @@ export const fileRecordSchema = z.object({
 
 export const filePageSchema = createPageSchema(fileRecordSchema);
 
+/**
+ * A short-lived grant that lets a browser element (`<img>`, `<video>`, `<audio>`) stream one file
+ * inline without an `Authorization` header.
+ *
+ * `path` is relative to the API origin — the client pairs it with its own base URL — and carries a
+ * signed, expiring token that is valid only for the one file it was minted for. It is not a
+ * credential for anything else: resolving it grants an inline read of that file and nothing more.
+ */
+export const previewGrantSchema = z.object({
+  path: z
+    .string()
+    .min(1)
+    .max(2048)
+    .describe('Relative to the API origin; carries the signed token.'),
+  expiresAt: z.iso
+    .datetime()
+    .describe('After this instant the path answers 401 rather than bytes.'),
+});
+
 export const folderRecordSchema = z.object({
   id: z.string().regex(ID_PATTERN.folder),
   owner: fileOwnerSchema,
@@ -442,6 +461,7 @@ export const abuseReportRequestSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export type FileRecord = z.infer<typeof fileRecordSchema>;
+export type PreviewGrant = z.infer<typeof previewGrantSchema>;
 export type FolderRecord = z.infer<typeof folderRecordSchema>;
 export type CreateFolderRequest = z.infer<typeof createFolderRequestSchema>;
 export type UpdateFolderRequest = z.infer<typeof updateFolderRequestSchema>;

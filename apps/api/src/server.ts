@@ -66,6 +66,16 @@ interface ProblemContext {
   requestId: string;
 }
 
+/**
+ * A preview URL carries its signing token in the query string, and the default request logging
+ * includes `req.url`. Redacting just that parameter means a token can never be replayed out of a
+ * log line, while the rest of the URL stays useful for diagnosis. Exported so it can be tested
+ * directly rather than only through a live log stream.
+ */
+export function redactPreviewToken(url: string): string {
+  return url.replace(/([?&]preview=)[^&#]*/i, '$1[redacted]');
+}
+
 interface ValidationIssueLike {
   instancePath?: string;
   message?: string;
@@ -116,7 +126,28 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     createServices(config, options.storage === undefined ? {} : { storage: options.storage });
 
   const app = Fastify({
-    logger: options.logger ?? { level: config.logLevel },
+    logger: options.logger ?? {
+      level: config.logLevel,
+      // Fastify logs `req.url`, and a preview URL carries its signing token in the query string.
+      // The serializer keeps every other field while redacting that one parameter.
+      serializers: {
+        req: (request: {
+          id?: string;
+          method?: string;
+          url?: string;
+          host?: string;
+          ip?: string;
+          socket?: { remotePort?: number };
+        }) => ({
+          id: request.id,
+          method: request.method,
+          url: redactPreviewToken(request.url ?? ''),
+          host: request.host,
+          remoteAddress: request.ip,
+          remotePort: request.socket?.remotePort,
+        }),
+      },
+    },
     trustProxy: config.trustProxy,
     // Request ids are generated server-side and echoed in responses. Client-supplied
     // ids are ignored: trusting them would allow log injection and trace confusion.

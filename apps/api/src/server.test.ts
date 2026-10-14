@@ -7,7 +7,7 @@ import {
   readinessResponseSchema,
 } from '@opendrive/shared';
 import { loadConfig } from './config.js';
-import { buildServer } from './server.js';
+import { buildServer, redactPreviewToken } from './server.js';
 
 const openServers: FastifyInstance[] = [];
 
@@ -202,6 +202,21 @@ describe('request validation', () => {
     const response = await server.inject({ method: 'GET', url: '/api/v1/files/not-a-file-id' });
     expect(response.statusCode).toBe(400);
     expect(problemDetailsSchema.parse(response.json()).code).toBe('VALIDATION_FAILED');
+  });
+});
+
+describe('log redaction', () => {
+  it('redacts a preview token in a URL without hiding the rest of it', () => {
+    expect(redactPreviewToken('/api/v1/files/file_x/content?preview=abc.def')).toBe(
+      '/api/v1/files/file_x/content?preview=[redacted]',
+    );
+    expect(redactPreviewToken('/api/v1/files?folder=root&preview=abc.def')).toBe(
+      '/api/v1/files?folder=root&preview=[redacted]',
+    );
+    expect(redactPreviewToken('/healthz')).toBe('/healthz');
+    expect(redactPreviewToken('/api/v1/files?preview=abc&limit=5')).toBe(
+      '/api/v1/files?preview=[redacted]&limit=5',
+    );
   });
 });
 

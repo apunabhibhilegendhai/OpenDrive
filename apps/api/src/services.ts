@@ -11,6 +11,8 @@ import { resolveStorageProvider } from './storage/registry.js';
 import type { StorageResolution } from './storage/registry.js';
 import { FinalizeJobStore } from './storage/finalize-jobs.js';
 import { UploadSessionStore } from './storage/upload-sessions.js';
+import { createPreviewSigner } from './preview-tokens.js';
+import type { PreviewSigner } from './preview-tokens.js';
 
 /**
  * Everything the routes need, assembled once at startup.
@@ -36,6 +38,11 @@ export interface AppServices {
    * record is: the staged bytes live in this process.
    */
   readonly finalizeJobs: FinalizeJobStore;
+  /**
+   * Signer for short-lived inline preview URLs, or null when no signing secret is configured (the
+   * preview route then answers `503`). Injected by tests that need a deterministic token.
+   */
+  readonly preview: PreviewSigner | null;
 }
 
 export interface CreateServicesOptions {
@@ -52,6 +59,8 @@ export interface CreateServicesOptions {
   readonly uploadSessions?: UploadSessionStore;
   /** Injected by tests that need to observe a finalize job. */
   readonly finalizeJobs?: FinalizeJobStore;
+  /** Injected by tests; null explicitly disables previews, undefined builds them from config. */
+  readonly preview?: PreviewSigner | null;
 }
 
 export function createServices(
@@ -71,5 +80,12 @@ export function createServices(
         maxActiveSessionsPerPrincipal: config.uploads.maxActiveSessionsPerPrincipal,
       }),
     finalizeJobs: options.finalizeJobs ?? new FinalizeJobStore(),
+    preview:
+      options.preview !== undefined
+        ? options.preview
+        : createPreviewSigner({
+            secret: config.preview.signingSecret,
+            ttlSeconds: config.preview.tokenTtlSeconds,
+          }),
   };
 }

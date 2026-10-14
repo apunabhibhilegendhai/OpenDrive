@@ -16,6 +16,7 @@ import {
   initiateUploadResponseSchema,
   limitsResponseSchema,
   meResponseSchema,
+  previewGrantSchema,
   readinessResponseSchema,
   resolveShareResponseSchema,
   uploadPartResponseSchema,
@@ -299,6 +300,25 @@ export class ApiClient {
       throw problemFrom(response.status, await readJson(response));
     }
     return response;
+  }
+
+  /**
+   * Mint a short-lived inline preview link.
+   *
+   * The API returns a path relative to its own origin plus an expiry; the absolute URL is composed
+   * here so a media element can load it without the credential this client attaches to its own
+   * requests. A type that cannot be rendered inline answers `409`, and a deployment with no signing
+   * secret answers `503`; both surface to the caller as an `ApiError`.
+   */
+  async createPreview(
+    fileId: string,
+    signal?: AbortSignal,
+  ): Promise<{ url: string; expiresAt: string }> {
+    const grant = await this.request(`${API_PREFIX}/files/${fileId}/preview`, previewGrantSchema, {
+      method: 'POST',
+      ...(signal ? { signal } : {}),
+    });
+    return { url: this.#url(grant.path), expiresAt: grant.expiresAt };
   }
 
   /** Folders ---------------------------------------------------------------- */

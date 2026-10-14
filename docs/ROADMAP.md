@@ -151,7 +151,7 @@ evidence exists.
 
 - [x] Which identity flows exist for anonymous uploads (deletion token only, or an optional account later). Decided in Phase 1: an anonymous session with a hashed credential and expiry, plus a per-file deletion token, and no account requirement — see `docs/DECISIONS.md` D24. A conversion path to a real account needs an explicit ownership transfer, and is not designed yet.
 - [ ] The public API's compatibility promise for v1 once real clients exist.
-- [ ] Whether previews are generated on upload or on first request (affects storage layout and cost).
+- [x] Whether previews are generated on upload or on first request (affects storage layout and cost). Decided: neither — an inline preview is a short-lived signed URL to the original object, minted on first request, so there is no preview store and no extra storage cost (see `docs/DECISIONS.md` D43).
 
 ### Environment for local database work
 

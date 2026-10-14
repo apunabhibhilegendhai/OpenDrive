@@ -559,6 +559,7 @@ export function DriveRoute() {
 
       {inspected !== null && (
         <FileInspector
+          api={api}
           file={inspected}
           folderPath={folderPath}
           onClose={() => setInspected(null)}

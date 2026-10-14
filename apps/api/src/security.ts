@@ -36,7 +36,11 @@ export function applySecurityHeaders(
 
   void reply.header('x-content-type-options', 'nosniff');
   void reply.header('referrer-policy', 'no-referrer');
-  void reply.header('cross-origin-resource-policy', 'same-origin');
+  // The default forbids cross-origin embedding. A route that intentionally serves an embeddable
+  // resource (an inline preview link) sets its own value first; respect it rather than overwrite.
+  if (reply.getHeader('cross-origin-resource-policy') === undefined) {
+    void reply.header('cross-origin-resource-policy', 'same-origin');
+  }
   void reply.header('x-frame-options', 'DENY');
   // Swagger UI relies on inline script/style, so it gets a relaxed but still
   // self-only policy. Every other response forbids all resource loading.

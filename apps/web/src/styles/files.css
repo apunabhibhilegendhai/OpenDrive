@@ -500,6 +500,55 @@
   font-size: var(--text-sm);
 }
 
+/* Inline preview ------------------------------------------------------------ */
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: var(--border-hairline) solid var(--rule-soft);
+  background: var(--surface-sunken);
+}
+
+.preview__image,
+.preview__video {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  background: var(--ink);
+}
+
+.preview__audio {
+  width: 100%;
+}
+
+.preview__text {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.preview__status {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.preview__open {
+  align-self: flex-start;
+  font-size: var(--text-xs);
+}
+
 .drivehint,
 .sharepanel__copy {
   display: flex;

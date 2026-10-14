@@ -5,6 +5,7 @@ import {
   fileRecordSchema,
   isServable,
   paginationQuerySchema,
+  previewGrantSchema,
   problemDetailsResponseSchema,
   sha256Hex,
   tokensEqual,
@@ -52,6 +53,18 @@ const listFilesQuerySchema = paginationQuerySchema.extend({
     .union([z.literal('root'), z.string().regex(/^fold_[0-9a-hjkmnp-tv-z]{26}$/)])
     .optional()
     .describe('Restrict to the root, or to the contents of one folder.'),
+});
+
+const contentQuerySchema = z.object({
+  preview: z
+    .string()
+    .min(1)
+    .max(512)
+    .optional()
+    .describe(
+      'Short-lived signed token minted by `POST /files/:fileId/preview`, authorizing an inline ' +
+        'read without an Authorization header so a browser element can embed the file.',
+    ),
 });
 
 export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
@@ -130,19 +143,48 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
           'Streams the stored object with bounded memory. Only a file in a servable state is ' +
           'served; a file still uploading, failed, quarantined or deleted answers 409 even to its ' +
           'owner, because owning an id is not the same as having a readable object. The success ' +
-          'response is the raw bytes; error responses use the standard problem shape.',
+          'response is the raw bytes; error responses use the standard problem shape. A valid ' +
+          '`preview` token, minted by `POST /files/:fileId/preview`, authorizes the same read ' +
+          'without an Authorization header so a browser element can embed the file inline.',
         params: fileParamsSchema,
+        querystring: contentQuerySchema,
       },
     },
     async (request, reply) => {
-      const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesRead);
+      const identity = requestIdentity(request);
       const provider = requireStorageProvider(services.storage);
       const sql = services.db.requireSql();
+      const previewToken = request.query.preview;
 
-      const file = assertFileOwnership(
-        identity,
-        await findFileById(sql, request.params.fileId, ownerKeyOf(identity)),
-      );
+      // A bearer credential takes the owner path. Otherwise a valid preview token may grant an
+      // inline read of exactly one file: that is what lets an <img>/<video>/<audio> embed it,
+      // because a browser element cannot attach an Authorization header.
+      let file;
+      let embedded = false;
+      if (identity.kind === 'none' && previewToken !== undefined) {
+        const signer = services.preview;
+        if (signer === null || !signer.verify(previewToken, request.params.fileId, new Date())) {
+          throw new AppError('UNAUTHENTICATED', {
+            detail: 'The preview link is invalid or has expired.',
+          });
+        }
+        file = await findFileByIdForAccessCheck(sql, request.params.fileId);
+        // A preview token only ever authorizes the inline-safe types it is minted for; a
+        // non-previewable type answers the same 404 an unknown id does, revealing nothing.
+        if (file === null || !isInlinePreviewable(file.mimeType)) {
+          throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
+        }
+        embedded = true;
+      } else {
+        const resolved = requireScope(identity, REQUIRED_SCOPES.filesRead);
+        file = assertFileOwnership(
+          resolved,
+          await findFileById(sql, request.params.fileId, ownerKeyOf(resolved)),
+        );
+      }
+
+      if (file === null)
+        throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
 
       if (!isServable(file.state, { scanningEnabled: services.config.limits.malwareScanEnabled })) {
         throw new AppError('CONFLICT', {
@@ -182,6 +224,11 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         contentDisposition(file.originalFilename, file.mimeType),
       );
       void reply.header('cache-control', 'private, no-store');
+      if (embedded) {
+        // Only now that the response is certain to be bytes rather than a problem document, mark
+        // the resource embeddable from another origin. An error keeps the default same-origin.
+        void reply.header('cross-origin-resource-policy', 'cross-origin');
+      }
       if (read.range !== null) {
         void reply.header(
           'content-range',
@@ -190,6 +237,63 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         void reply.status(206);
       }
       return reply.send(Readable.from(read.stream));
+    },
+  );
+
+  app.post(
+    `${API_PREFIX}/files/:fileId/preview`,
+    {
+      schema: {
+        tags: ['files'],
+        summary: 'Mint a short-lived inline preview link',
+        description:
+          'Returns a path (relative to the API origin) that streams this file inline for a short ' +
+          'while, so a browser element can display it without an Authorization header. Only a ' +
+          'servable file whose type is safe to render inline (raster image, audio or video) can ' +
+          'be previewed; any other file answers 409, and a deployment with no signing secret ' +
+          'answers 503.',
+        params: fileParamsSchema,
+        response: {
+          200: previewGrantSchema,
+          401: problemDetailsResponseSchema,
+          404: problemDetailsResponseSchema,
+          409: problemDetailsResponseSchema,
+          503: problemDetailsResponseSchema,
+        },
+      },
+    },
+    async (request) => {
+      const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesRead);
+      const sql = services.db.requireSql();
+      const file = assertFileOwnership(
+        identity,
+        await findFileById(sql, request.params.fileId, ownerKeyOf(identity)),
+      );
+
+      if (!isServable(file.state, { scanningEnabled: services.config.limits.malwareScanEnabled })) {
+        throw new AppError('CONFLICT', {
+          detail: `A file in state "${file.state}" has no content to preview.`,
+          context: { state: file.state },
+        });
+      }
+      if (!isInlinePreviewable(file.mimeType)) {
+        throw new AppError('CONFLICT', {
+          detail: 'This file type is not rendered inline, so it cannot be previewed.',
+          context: { mimeType: file.mimeType },
+        });
+      }
+      const signer = services.preview;
+      if (signer === null) {
+        throw new AppError('SERVICE_UNAVAILABLE', {
+          detail: 'Preview links are not configured in this deployment.',
+        });
+      }
+
+      const grant = signer.mint(file.id, new Date());
+      return {
+        path: `${API_PREFIX}/files/${file.id}/content?preview=${encodeURIComponent(grant.token)}`,
+        expiresAt: grant.expiresAt.toISOString(),
+      };
     },
   );
 

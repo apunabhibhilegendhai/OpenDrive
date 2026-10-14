@@ -91,6 +91,13 @@ const environmentSchema = z.object({
   // Keyed hash of the client address recorded with an anonymous session. Absent means the
   // hash is simply not recorded: a raw address is never stored as a fallback.
   IP_HASH_SECRET: optionalString,
+  //
+  // Inline preview grants. A browser element cannot send an Authorization header, so a preview
+  // URL carries a short-lived signed token; `PREVIEW_SIGNING_SECRET` is the HMAC key and falls
+  // back to `IP_HASH_SECRET`. Absent means previews are disabled and the mint route answers 503.
+  //
+  PREVIEW_SIGNING_SECRET: optionalString,
+  PREVIEW_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(3600),
   // Lifetime of a newly created anonymous session, in hours.
   ANONYMOUS_SESSION_TTL_HOURS: z.coerce.number().int().positive().max(8760).default(168),
   //
@@ -175,6 +182,15 @@ export interface ApiConfig {
   };
   /** Secret for hashing client addresses; null means addresses are not recorded at all. */
   readonly ipHashSecret: string | null;
+  /**
+   * Inline preview grants. `signingSecret` is the effective HMAC key — the dedicated
+   * `PREVIEW_SIGNING_SECRET`, or `IP_HASH_SECRET` as its fallback; null disables previews, and the
+   * mint route then answers `503` rather than signing under a default key.
+   */
+  readonly preview: {
+    readonly signingSecret: string | null;
+    readonly tokenTtlSeconds: number;
+  };
   /** Origin used to build share URLs. Falls back to the configured bind address in development. */
   readonly publicBaseUrl: string;
 }
@@ -294,6 +310,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       maxActiveSessionsPerPrincipal: values.UPLOAD_MAX_ACTIVE_SESSIONS_PER_PRINCIPAL,
     },
     ipHashSecret: readValue(env, 'IP_HASH_SECRET'),
+    preview: {
+      signingSecret: readValue(env, 'PREVIEW_SIGNING_SECRET') ?? readValue(env, 'IP_HASH_SECRET'),
+      tokenTtlSeconds: values.PREVIEW_TOKEN_TTL_SECONDS,
+    },
     publicBaseUrl:
       values.PUBLIC_BASE_URL ??
       `http://${values.API_HOST === '0.0.0.0' ? '127.0.0.1' : values.API_HOST}:${values.API_PORT}`,

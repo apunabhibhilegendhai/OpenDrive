@@ -1,8 +1,10 @@
 import type { FileRecord } from '@opendrive/shared';
 import { Icon } from '../components/Icon.js';
+import type { ApiClient } from '../lib/api/client.js';
 import { formatBytes } from '../lib/format.js';
 import { isDownloadable, formatTimestamp } from './presentation.js';
 import { styleForMime } from '../lib/files/kind.js';
+import { FilePreview } from './FilePreview.js';
 
 /**
  * The inspector — "field notes" on one file.
@@ -13,6 +15,7 @@ import { styleForMime } from '../lib/files/kind.js';
  * less honest than a disabled one that explains itself.
  */
 export function FileInspector({
+  api,
   file,
   folderPath,
   onClose,
@@ -24,6 +27,7 @@ export function FileInspector({
   shares,
   anonymous,
 }: {
+  api: ApiClient;
   file: FileRecord;
   folderPath: string;
   onClose: () => void;
@@ -58,6 +62,8 @@ export function FileInspector({
       <p className="inspector__family" style={{ color: `var(${style.token})` }}>
         {style.label} · {file.mimeType}
       </p>
+
+      {downloadable && <FilePreview api={api} file={file} />}
 
       <dl className="inspector__facts">
         <div>
@@ -168,7 +174,6 @@ export function FileInspector({
         <h4 className="label">Not available yet</h4>
         <ul>
           <li>Rename or move this file — the API has no metadata update route for files.</li>
-          <li>Preview — this deployment has no preview pipeline.</li>
           {anonymous && <li>Account features — an anonymous session cannot hold API keys.</li>}
         </ul>
       </section>
