@@ -80,30 +80,125 @@ export interface SharePageInput {
   readonly downloadCount: number;
 }
 
+/**
+ * The page is styled to the app's own design system — "grand-line chart table" — so a share link
+ * lands on the same product the signed-in app shows: chart paper (or Night Voyage when the reader
+ * prefers dark), a 2px rule with hard offsets instead of blur, condensed display headings, and mono
+ * for the terms. Every value mirrors `apps/web/src/styles/tokens.css`, copied as a literal: this
+ * document is rendered by the API with no build step, so it can neither import the web app's
+ * stylesheet nor make a request for one. The theme follows the operating system rather than a
+ * toggle, because a toggle needs the script this page deliberately does not ship.
+ */
 const STYLES = `
-:root { color-scheme: dark light; }
+:root {
+  color-scheme: light;
+
+  --paper: #f2ead9;
+  --surface: #fffdf6;
+  --surface-sunken: #f7f1e4;
+  --ink: #14120e;
+  --ink-soft: #4a4436;
+  --muted: #6d6553;
+  --primary: #c02d1b;
+  --primary-ink: #fffdf6;
+  --rule: #14120e;
+  --rule-hairline: #ded3ba;
+  --chartline-soft: rgba(20, 18, 14, 0.07);
+
+  --radius-control: 2px;
+  --radius-panel: 3px;
+  --border-rule: 2px;
+  --shadow-brutal: 4px 4px 0 var(--ink);
+  --shadow-plate: 7px 7px 0 var(--ink);
+
+  --font-display: Bahnschrift, 'Arial Narrow', 'Helvetica Neue', system-ui, sans-serif;
+  --font-body: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --tracking-label: 0.08em;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --paper: #0b1620;
+    --surface: #122130;
+    --surface-sunken: #0e1b26;
+    --ink: #e9eef2;
+    --ink-soft: #b3c1cd;
+    --muted: #8fa1b0;
+    --primary: #ea6248;
+    --primary-ink: #0b1620;
+    --rule: #e9eef2;
+    --rule-hairline: #22394a;
+    --chartline-soft: rgba(233, 238, 242, 0.08);
+  }
+}
+
 * { box-sizing: border-box; }
+
 body {
   margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
-  background: #0b0d12; color: #e6e8ee;
-  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background-color: var(--paper);
+  /* The chart table itself, drawn with gradients the way the app draws it: no image requests. */
+  background-image:
+    repeating-linear-gradient(0deg, transparent 0 39px, var(--chartline-soft) 39px 40px),
+    repeating-linear-gradient(90deg, transparent 0 39px, var(--chartline-soft) 39px 40px);
+  color: var(--ink);
+  font: 15px/1.5 var(--font-body);
 }
+
 .card {
-  width: min(640px, 100%); background: #141821; border: 1px solid #262c3a;
-  border-radius: 16px; padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  width: min(640px, 100%); background: var(--surface);
+  border: var(--border-rule) solid var(--rule); border-radius: var(--radius-panel);
+  padding: 28px; box-shadow: var(--shadow-plate);
 }
-.eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #8b93a7; }
-h1 { margin: 0 0 6px; font-size: 22px; line-height: 1.25; word-break: break-word; }
-.meta { margin: 0 0 20px; color: #9aa2b6; font-size: 13px; word-break: break-word; }
-.preview { display: block; width: 100%; max-height: 60vh; margin: 0 0 20px; border-radius: 12px; background: #0b0d12; }
+
+.eyebrow {
+  margin: 0 0 6px; font-family: var(--font-display); font-stretch: condensed;
+  font-size: 11px; font-weight: 600; letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--ink-soft);
+}
+
+h1 {
+  margin: 0 0 6px; font-family: var(--font-display); font-stretch: condensed;
+  font-size: clamp(22px, 5vw, 30px); font-weight: 600; letter-spacing: -0.01em;
+  line-height: 1.08; text-wrap: balance; word-break: break-word;
+}
+
+/* The terms are ids, sizes and timestamps — the app prints those in the mono face. */
+.meta {
+  margin: 0 0 20px; color: var(--muted); font-family: var(--font-mono);
+  font-size: 12.5px; word-break: break-word;
+}
+
+.preview {
+  display: block; width: 100%; max-height: 60vh; margin: 0 0 20px;
+  border: var(--border-rule) solid var(--rule); border-radius: var(--radius-control);
+  background: var(--surface-sunken);
+}
 .preview--image { object-fit: contain; }
+
 .button {
-  display: inline-block; padding: 11px 18px; border-radius: 10px; font-weight: 600;
-  text-decoration: none; background: #5b7cfa; color: #fff;
+  display: inline-block; padding: 11px 18px;
+  border: var(--border-rule) solid var(--ink); border-radius: var(--radius-control);
+  background: var(--primary); color: var(--primary-ink);
+  font-weight: 600; text-decoration: none; box-shadow: var(--shadow-brutal);
+  transition: transform 120ms ease-out, box-shadow 120ms ease-out;
 }
-.button:focus-visible { outline: 2px solid #aab8ff; outline-offset: 2px; }
-.note { margin: 18px 0 0; color: #7b8398; font-size: 12px; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.button:hover { filter: brightness(1.06); }
+.button:active { transform: translate(4px, 4px); box-shadow: none; }
+.button:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+
+.note {
+  margin: 18px 0 0; padding-top: 14px;
+  border-top: var(--border-rule) solid var(--rule-hairline);
+  color: var(--muted); font-size: 12.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button { transition: none; }
+}
 `;
 
 function layout(title: string, body: string): string {
