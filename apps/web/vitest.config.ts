@@ -13,5 +13,9 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     setupFiles: ['./src/test/setup.ts'],
+    // `pnpm -r test` runs every package's suite at once and the jsdom files run in parallel
+    // workers, so a render that takes tens of milliseconds alone can take seconds under that
+    // contention. This bounds a hung test; it relaxes no assertion.
+    testTimeout: 20_000,
   },
 });

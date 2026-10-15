@@ -6,6 +6,24 @@ pnpm-lock.yaml
 .vite/
 supabase/.temp/
 
+# Local agent/tool state (logs, project id). Never source.
+.freebuff/
+
+# Vercel CLI link state (project id, org id, README). Written by `vercel link`/`vercel deploy`
+# next to each project; it is deployment tooling's file, not this repository's source.
+.vercel/
+
+# Prettier has no parser for git attributes, and it is not code.
+.gitattributes
+
+# Large local media that is not part of the source tree. Prettier attempts to read these as text
+# and dies with "Invalid string length" on anything this big, which used to break `pnpm verify`.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.mp3
+
 # Planning prompt documents kept at the repository root (not source code).
 /CURRENT-STAGE.md
 /PHASE2-COMPLETION-PROMPT.md

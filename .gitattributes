@@ -1,0 +1,22 @@
+# Line endings are LF, in the repository and in every checkout.
+#
+# prettier (`"endOfLine": "lf"`) and .editorconfig both require LF, but a Windows working copy with
+# `core.autocrlf=true` converts files on checkout, so a committed file can silently become CRLF and
+# `pnpm format:check` then fails on code nobody edited (this is how apps/api/src/mime.ts arrived).
+# Normalising here removes the checkout from the equation entirely.
+* text=auto eol=lf
+
+# Binary assets, never normalised.
+*.mp4 binary
+*.mov binary
+*.mkv binary
+*.webm binary
+*.mp3 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

@@ -18,5 +18,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // Several suites build a real Fastify server (swagger + zod compilers) before asserting, which
+    // is a second or two of work. `pnpm -r test` runs every package's suite at once, so the default
+    // 5s budget is a coin toss on a loaded machine. This bounds a hung test, not a slow assertion.
+    testTimeout: 20_000,
   },
 });

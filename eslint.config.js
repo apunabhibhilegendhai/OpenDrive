@@ -12,6 +12,8 @@ export default tseslint.config(
       '**/*.tsbuildinfo',
       'pnpm-lock.yaml',
       'supabase/.temp/**',
+      // Vercel CLI link state, written next to each project by `vercel link`/`vercel deploy`.
+      '**/.vercel/**',
     ],
   },
   {

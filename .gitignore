@@ -41,6 +41,20 @@ supabase/.env
 # Deployment tooling
 .vercel/
 
+# Local agent/tool state
+.freebuff/
+
+# Edge cache (non-authoritative local byte cache; derived state, never committed)
+.edge-cache/
+
+# Large local media: a downloaded video, not source. Kept out of the tree so build, format and
+# lint tooling never has to read it.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.mp3
+
 # Local infrastructure credentials — never commit
 opendrive-infra-credentials.txt
 *-credentials.txt
