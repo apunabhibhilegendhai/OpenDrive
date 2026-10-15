@@ -17,6 +17,7 @@ export type { IdKind, IdPrefix, ParsedId } from './ids.js';
 export { newOpaqueToken, sha256Hex, sha256HexOfBytes, tokensEqual } from './tokens.js';
 
 export {
+  ANONYMOUS_CREDENTIAL_HEADER,
   ANONYMOUS_SESSION_CREDENTIAL_PATTERN,
   ANONYMOUS_SESSION_CREDENTIAL_PREFIX,
   API_KEY_HEADER,

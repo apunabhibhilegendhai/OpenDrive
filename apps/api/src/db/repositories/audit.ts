@@ -16,6 +16,8 @@ import type { SqlExecutor } from '../client.js';
 
 export const AUDIT_ACTIONS = {
   anonymousSessionCreated: 'anonymous_session.created',
+  /** An anonymous session's resources were transferred into an account, and it was revoked. */
+  anonymousSessionMigrated: 'anonymous_session.migrated',
   apiKeyCreated: 'api_key.created',
   apiKeyRevoked: 'api_key.revoked',
   authenticationFailed: 'auth.failed',

@@ -31,7 +31,21 @@ interface AnonymousSessionRow {
   expiresAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+  migratedAt: Date | null;
+  migratedToUserId: string | null;
+  migratedFileCount: number | null;
+  migratedBytes: string | number | null;
+  migratedFolders: number | null;
+  migratedSkippedFiles: number | null;
 }
+
+/**
+ * Every read of an anonymous session selects the migration record as well as the session itself.
+ *
+ * Written out in each query rather than shared through a helper, matching the other repositories:
+ * an identity lookup that could not see `migrated_at` would authenticate a credential whose
+ * resources now belong to an account, which is the two-owner state that column exists to prevent.
+ */
 
 function toProfile(row: ProfileRow): ProfileEntity {
   return {
@@ -56,6 +70,15 @@ function toAnonymousSession(row: AnonymousSessionRow): AnonymousSessionEntity {
     expiresAt: parseTimestamp(row.expiresAt, 'anonymous_sessions.expires_at'),
     lastUsedAt: parseNullableTimestamp(row.lastUsedAt, 'anonymous_sessions.last_used_at'),
     revokedAt: parseNullableTimestamp(row.revokedAt, 'anonymous_sessions.revoked_at'),
+    migratedAt: parseNullableTimestamp(row.migratedAt, 'anonymous_sessions.migrated_at'),
+    migratedToUserId: row.migratedToUserId,
+    migratedFileCount: row.migratedFileCount,
+    migratedBytes:
+      row.migratedBytes === null
+        ? null
+        : parseByteCount(row.migratedBytes, 'anonymous_sessions.migrated_bytes'),
+    migratedFolders: row.migratedFolders,
+    migratedSkippedFiles: row.migratedSkippedFiles,
   };
 }
 
@@ -106,7 +129,10 @@ export async function insertAnonymousSession(
     insert into anonymous_sessions (id, credential_hash, expires_at, created_ip_hash)
     values (${input.id}, ${input.credentialHash}, ${input.expiresAt}, ${input.createdIpHash})
     returning id, credential_hash as "credentialHash", status, created_at as "createdAt",
-              expires_at as "expiresAt", last_used_at as "lastUsedAt", revoked_at as "revokedAt"
+              expires_at as "expiresAt", last_used_at as "lastUsedAt", revoked_at as "revokedAt",
+              migrated_at as "migratedAt", migrated_to_user_id as "migratedToUserId",
+              migrated_file_count as "migratedFileCount", migrated_bytes as "migratedBytes",
+              migrated_folders as "migratedFolders", migrated_skipped_files as "migratedSkippedFiles"
   `;
   const row = rows[0];
   if (row === undefined) throw new Error('anonymous session insert returned no row');
@@ -126,7 +152,10 @@ export async function findAnonymousSessionByCredentialHash(
 ): Promise<AnonymousSessionEntity | null> {
   const rows = await sql<AnonymousSessionRow[]>`
     select id, credential_hash as "credentialHash", status, created_at as "createdAt",
-           expires_at as "expiresAt", last_used_at as "lastUsedAt", revoked_at as "revokedAt"
+           expires_at as "expiresAt", last_used_at as "lastUsedAt", revoked_at as "revokedAt",
+           migrated_at as "migratedAt", migrated_to_user_id as "migratedToUserId",
+           migrated_file_count as "migratedFileCount", migrated_bytes as "migratedBytes",
+           migrated_folders as "migratedFolders", migrated_skipped_files as "migratedSkippedFiles"
       from anonymous_sessions
      where credential_hash = ${credentialHash}
   `;
@@ -140,7 +169,10 @@ export async function findAnonymousSessionById(
 ): Promise<AnonymousSessionEntity | null> {
   const rows = await sql<AnonymousSessionRow[]>`
     select id, credential_hash as "credentialHash", status, created_at as "createdAt",
-           expires_at as "expiresAt", last_used_at as "lastUsedAt", revoked_at as "revokedAt"
+           expires_at as "expiresAt", last_used_at as "lastUsedAt", revoked_at as "revokedAt",
+           migrated_at as "migratedAt", migrated_to_user_id as "migratedToUserId",
+           migrated_file_count as "migratedFileCount", migrated_bytes as "migratedBytes",
+           migrated_folders as "migratedFolders", migrated_skipped_files as "migratedSkippedFiles"
       from anonymous_sessions
      where id = ${sessionId}
   `;

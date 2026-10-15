@@ -28,6 +28,18 @@ export const API_KEY_HEADER = 'x-api-key';
  */
 export const SHARE_TOKEN_HEADER = 'x-share-token';
 
+/**
+ * An anonymous session credential presented alongside a *different* credential.
+ *
+ * `Authorization` can only carry one credential, and a request that carried two would be refused
+ * as ambiguous (see the conflict policy in docs/SECURITY.md). Bringing an anonymous session's
+ * resources into an account is the one operation that genuinely needs both at once, so the
+ * anonymous half travels in this header: the caller proves which account it is (as always, from
+ * the credential) and, separately, that it holds the session being migrated. Nothing about the
+ * account is ever read from the body.
+ */
+export const ANONYMOUS_CREDENTIAL_HEADER = 'x-anonymous-credential';
+
 /** Prefix of an anonymous session credential. Named in the `anonymous_sessions` table comment. */
 export const ANONYMOUS_SESSION_CREDENTIAL_PREFIX = 'ods_';
 

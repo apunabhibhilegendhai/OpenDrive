@@ -42,6 +42,15 @@ export interface AnonymousSessionEntity {
   readonly expiresAt: Date;
   readonly lastUsedAt: Date | null;
   readonly revokedAt: Date | null;
+  /** When the session's resources were transferred into an account, if they were. */
+  readonly migratedAt: Date | null;
+  /** The account they went to. Present exactly when `migratedAt` is. */
+  readonly migratedToUserId: string | null;
+  /** Counts as reported at that moment, so a repeat answers with the same numbers. */
+  readonly migratedFileCount: number | null;
+  readonly migratedBytes: number | null;
+  readonly migratedFolders: number | null;
+  readonly migratedSkippedFiles: number | null;
 }
 
 export interface FolderEntity {

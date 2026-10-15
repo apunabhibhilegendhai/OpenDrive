@@ -5,6 +5,7 @@ import { apiKeyRoutes } from './api-keys.js';
 import { fileRoutes } from './files.js';
 import { folderRoutes } from './folders.js';
 import { identityRoutes } from './identity.js';
+import { migrationRoutes } from './migration.js';
 import { sessionRoutes } from './sessions.js';
 import { shareRoutes } from './shares.js';
 import { systemRoutes } from './system.js';
@@ -22,6 +23,7 @@ export const registerRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
   await app.register(systemRoutes, services);
   await app.register(identityRoutes, services);
   await app.register(sessionRoutes, services);
+  await app.register(migrationRoutes, services);
   await app.register(apiKeyRoutes, services);
   await app.register(uploadRoutes, services);
   await app.register(fileRoutes, services);

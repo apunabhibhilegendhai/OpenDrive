@@ -211,6 +211,42 @@ export const anonymousSessionResponseSchema = z.object({
   expiresAt: z.iso.datetime(),
 });
 
+/**
+ * The result of bringing an anonymous session's resources into an account.
+ *
+ * Every number here is counted from the rows the transfer actually moved, so a client can report
+ * what happened without another query. `alreadyMigrated` distinguishes a first migration from a
+ * repeat of the same one: the operation is idempotent for the account it already went to, and the
+ * recorded counts are returned unchanged rather than recomputed (the rows are no longer the
+ * session's to count).
+ */
+export const migratedFolderRenameSchema = z.object({
+  folderId: z.string().regex(ID_PATTERN.folder),
+  from: z.string().describe('The folder name as the anonymous session had it.'),
+  to: z.string().describe('The name it holds now, chosen to avoid an existing sibling.'),
+});
+
+export const migrateAnonymousSessionResponseSchema = z.object({
+  sessionId: z.string().regex(ID_PATTERN.session),
+  /** The account the resources now belong to: always the calling account. */
+  targetUserId: z.uuid(),
+  migratedAt: z.iso.datetime(),
+  alreadyMigrated: z.boolean(),
+  files: z.object({
+    count: z.number().int().nonnegative(),
+    bytes: z.number().int().nonnegative(),
+  }),
+  folders: z.object({ count: z.number().int().nonnegative() }),
+  /**
+   * Files that had no retrievable bytes (an abandoned or failed upload). They are not transferred:
+   * they are marked deleted, because an upload that never finished cannot be resumed once the
+   * credential that owned it is revoked.
+   */
+  skippedIncompleteFiles: z.number().int().nonnegative(),
+  /** Root folders renamed because the account already had a sibling with that name. */
+  folderRenames: z.array(migratedFolderRenameSchema),
+});
+
 // ---------------------------------------------------------------------------
 // Files and folders
 // ---------------------------------------------------------------------------
@@ -469,6 +505,8 @@ export type AuthContext = z.infer<typeof authContextSchema>;
 export type QuotaSummary = z.infer<typeof quotaSummarySchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
 export type AnonymousSessionResponse = z.infer<typeof anonymousSessionResponseSchema>;
+export type MigrateAnonymousSessionResponse = z.infer<typeof migrateAnonymousSessionResponseSchema>;
+export type MigratedFolderRename = z.infer<typeof migratedFolderRenameSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type ReadinessResponse = z.infer<typeof readinessResponseSchema>;
 export type LimitsResponse = z.infer<typeof limitsResponseSchema>;
