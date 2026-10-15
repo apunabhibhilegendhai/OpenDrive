@@ -33,11 +33,19 @@ export function useFileList(folderId: string | null): FileListState {
   const [loadingMore, setLoadingMore] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const controllerRef = useRef<AbortController | null>(null);
+  /**
+   * Which listing a response belongs to. A new generation is taken whenever the folder, the
+   * principal or the reload token changes, so a page that arrives after the drive has moved on is
+   * dropped instead of being appended to rows it does not belong with.
+   */
+  const generationRef = useRef(0);
 
   useEffect(() => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
+    generationRef.current += 1;
+    const generation = generationRef.current;
     setStatus('loading');
     setError(null);
     setFiles([]);
@@ -49,12 +57,12 @@ export function useFileList(folderId: string | null): FileListState {
           { limit: PAGE_SIZE, ...(folderId === null ? { folder: 'root' } : { folder: folderId }) },
           controller.signal,
         );
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || generation !== generationRef.current) return;
         setFiles(page.items);
         setNextCursor(page.nextCursor);
         setStatus('ready');
       } catch (failure) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || generation !== generationRef.current) return;
         setError(describeFailure(failure));
         setStatus('error');
       }
@@ -67,6 +75,7 @@ export function useFileList(folderId: string | null): FileListState {
 
   const loadMore = useCallback(() => {
     if (nextCursor === null || loadingMore) return;
+    const generation = generationRef.current;
     setLoadingMore(true);
     void (async () => {
       try {
@@ -75,9 +84,14 @@ export function useFileList(folderId: string | null): FileListState {
           ...(folderId === null ? { folder: 'root' } : { folder: folderId }),
           cursor: nextCursor,
         });
+        // The folder, the account or the reload may have changed while this page was in flight.
+        // Appending it now would mix a listing this screen no longer represents into the current
+        // one, and on an account switch that listing belongs to the previous account.
+        if (generation !== generationRef.current) return;
         setFiles((current) => [...current, ...page.items]);
         setNextCursor(page.nextCursor);
       } catch (failure) {
+        if (generation !== generationRef.current) return;
         setError(describeFailure(failure));
       } finally {
         setLoadingMore(false);

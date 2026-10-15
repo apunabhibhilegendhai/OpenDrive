@@ -1,4 +1,5 @@
 import { webcrypto } from 'node:crypto';
+import { configure } from '@testing-library/dom';
 import { cleanup } from '@testing-library/react';
 import { afterEach } from 'vitest';
 
@@ -11,6 +12,12 @@ import { afterEach } from 'vitest';
  * data-layer tests are unaffected.
  */
 if (typeof window !== 'undefined') {
+  // `findBy*`/`waitFor` poll for one second by default. The whole web suite runs in parallel
+  // workers, and a screen that settles well inside a second on its own can take longer while
+  // twelve jsdom files compete for one machine. Raising the wait ceiling keeps the same query and
+  // the same assertion; it only stops contention from being reported as a missing element.
+  configure({ asyncUtilTimeout: 5_000 });
+
   // The shims are installed through a plain record of the globals: assigning an unbound method
   // reference is exactly the kind of detached-`this` call the production code is kept clear of.
   const globals = window as unknown as Record<string, unknown>;

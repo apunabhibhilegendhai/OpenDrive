@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { API_PREFIX } from '@opendrive/shared';
 import { ApiClient, PART_IDLE_TIMEOUT_MS } from './client.js';
-import { ApiError, ContractError, NetworkError } from './errors.js';
+import { ApiError, ContractError, NetworkError, NETWORK_FAILURE_MESSAGE } from './errors.js';
 import {
   createFakeServer,
   createFakeXhr,
@@ -181,7 +181,13 @@ describe('ApiClient failure mapping', () => {
       },
     });
 
-    await expect(failing.listFiles({})).rejects.toBeInstanceOf(NetworkError);
+    await expect(failing.listFiles({})).rejects.toMatchObject({
+      // The message is the sentence a person reads, never the string the engine produced — here
+      // "fetch failed", in Chromium "Failed to fetch". The match also pins the failure as a
+      // network failure rather than a server answer that never arrived.
+      name: 'NetworkError',
+      message: NETWORK_FAILURE_MESSAGE,
+    });
   });
 
   it('reads the readiness body even when the API answers 503', async () => {

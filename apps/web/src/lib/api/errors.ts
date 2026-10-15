@@ -31,9 +31,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The one sentence a transport failure is described with.
+ *
+ * A rejected `fetch` carries an engine-specific string — "Failed to fetch" in Chromium,
+ * "NetworkError when attempting to fetch resource" in Firefox — which explains nothing to a person
+ * and differs per browser. It is never the message anyone reads. Exported so the client that raises
+ * the failure and this module that describes it cannot drift apart on the wording.
+ */
+export const NETWORK_FAILURE_MESSAGE =
+  'The API could not be reached. Check the connection and try again.';
+
 export class NetworkError extends Error {
-  constructor(detail: string) {
-    super(detail);
+  constructor(detail: string, options?: ErrorOptions) {
+    super(detail, options);
     this.name = 'NetworkError';
   }
 }
@@ -109,7 +120,7 @@ export function problemFrom(status: number, payload: unknown): ApiError {
  */
 export function describeFailure(error: unknown): string {
   if (error instanceof NetworkError) {
-    return 'The API could not be reached. Check the connection and try again.';
+    return NETWORK_FAILURE_MESSAGE;
   }
   if (error instanceof ContractError) {
     return error.message;

@@ -1,4 +1,5 @@
 import {
+  ANONYMOUS_CREDENTIAL_HEADER,
   API_PREFIX,
   SHARE_TOKEN_HEADER,
   UPLOAD_PART_CHECKSUM_HEADER,
@@ -16,6 +17,7 @@ import {
   initiateUploadResponseSchema,
   limitsResponseSchema,
   meResponseSchema,
+  migrateAnonymousSessionResponseSchema,
   previewGrantSchema,
   readinessResponseSchema,
   resolveShareResponseSchema,
@@ -34,12 +36,19 @@ import type {
   InitiateUploadResponse,
   LimitsResponse,
   MeResponse,
+  MigrateAnonymousSessionResponse,
   ReadinessResponse,
   ResolveShareResponse,
   UploadStatusResponse,
   UpdateFolderRequest,
 } from '@opendrive/shared';
-import { ApiError, ContractError, NetworkError, problemFrom } from './errors.js';
+import {
+  ApiError,
+  ContractError,
+  NETWORK_FAILURE_MESSAGE,
+  NetworkError,
+  problemFrom,
+} from './errors.js';
 
 /**
  * The single typed client for the OpenDrive API.
@@ -169,8 +178,12 @@ export class ApiClient {
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
     } catch (error) {
+      // An abort is a cancellation the caller asked for, not a failure; it is rethrown untouched.
       if (error instanceof DOMException && error.name === 'AbortError') throw error;
-      throw new NetworkError(error instanceof Error ? error.message : 'network error');
+      // Everything else is a transport failure: the request never produced a response. The engine's
+      // own reason is kept as the cause for a debugger, and the message is the sentence a person
+      // reads — a browser-specific string is not an explanation and must not reach the UI.
+      throw new NetworkError(NETWORK_FAILURE_MESSAGE, { cause: error });
     }
   }
 
@@ -602,6 +615,25 @@ export class ApiClient {
       body: {},
       ...(signal ? { signal } : {}),
     });
+  }
+
+  /** Anonymous session migration -------------------------------------------- */
+
+  /**
+   * Bring an anonymous session's files and folders into the account this client is authenticated as.
+   *
+   * **Two credentials travel**, and they mean different things: the account's, in the usual
+   * `Authorization` header (the destination), and the session's, in its own header. There is no
+   * request field naming an account or a session, so this call cannot ask for anything other than
+   * "the session I hold, into the account I am". The response reports what moved; a repeat against
+   * the same account answers `alreadyMigrated` rather than moving anything twice.
+   */
+  migrateAnonymousSession(credential: string): Promise<MigrateAnonymousSessionResponse> {
+    return this.request(
+      `${API_PREFIX}/identity/migrations`,
+      migrateAnonymousSessionResponseSchema,
+      { method: 'POST', headers: { [ANONYMOUS_CREDENTIAL_HEADER]: credential } },
+    );
   }
 }
 

@@ -108,6 +108,14 @@ const PART_RETRY_MAX_DELAY_MS = 15_000;
 /** Rounds over the part list: a part that exhausts its retries resumes from server progress. */
 const MAX_PART_ROUNDS = 3;
 
+/**
+ * Maximum parts uploaded concurrently.
+ *
+ * The API allows 600 parts/min (10/sec). With 4-8 concurrent we saturate typical connections
+ * without hitting the limit. Cloudflare Tunnel + browser HTTP/2 multiplexing handles this well.
+ */
+export const UPLOAD_CONCURRENCY = 6;
+
 /** Attempts for a finalize poll, which is idempotent and therefore always safe to repeat. */
 export const FINALIZE_RETRY_ATTEMPTS = 6;
 
@@ -116,6 +124,37 @@ function retryDelay(baseMs: number, attempt: number): number {
   if (baseMs <= 0) return 0;
   const grown = Math.min(baseMs * 2 ** (attempt - 1), PART_RETRY_MAX_DELAY_MS);
   return Math.round(grown * (0.7 + Math.random() * 0.6));
+}
+
+/**
+ * A simple semaphore for limiting concurrent async operations.
+ */
+class Semaphore {
+  #permits: number;
+  #waiters: Array<() => void> = [];
+
+  constructor(permits: number) {
+    this.#permits = permits;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.#permits > 0) {
+      this.#permits -= 1;
+      return;
+    }
+    return new Promise((resolve) => {
+      this.#waiters.push(resolve);
+    });
+  }
+
+  release(): void {
+    this.#permits += 1;
+    const next = this.#waiters.shift();
+    if (next !== undefined) {
+      this.#permits -= 1;
+      next();
+    }
+  }
 }
 
 /**
@@ -166,6 +205,159 @@ export async function completeUploadWithRetry(
       await wait(retryDelay(retryBaseDelayMs, attempt), signal);
     }
   }
+}
+
+/** One part to send: its number, its length, its bytes and its checksum, when one was computed. */
+export interface UploadPartToSend {
+  readonly partNumber: number;
+  readonly sizeBytes: number;
+  readonly blob: Blob;
+  readonly checksum: string | undefined;
+}
+
+/**
+ * Sends every part of one object: bounded concurrency, a retry per part, and a round across the
+ * parts that exhaust theirs.
+ *
+ * Exported for the same reason `uploadPartWithRetry` is: the behaviour worth proving is not
+ * decoration. A part that runs out of attempts is *re-sent in the next round* instead of being
+ * quietly skipped and the object finalized with a hole in it, and the number handed to
+ * `onProgress` is the sum of what has been confirmed plus what is in flight, so it can never step
+ * backwards when a late part lands after an early one.
+ *
+ * `retryBaseDelayMs`, `concurrency` and `maxRounds` are injectable so a test can exercise all of
+ * that without waiting a minute. Returns the bytes the server confirmed.
+ */
+export async function transferParts(options: {
+  api: ApiClient;
+  uploadId: string;
+  parts: readonly UploadPartToSend[];
+  signal: AbortSignal;
+  onProgress?: (uploadedBytes: number) => void;
+  concurrency?: number;
+  retryBaseDelayMs?: number;
+  maxRounds?: number;
+}): Promise<number> {
+  const concurrency = options.concurrency ?? UPLOAD_CONCURRENCY;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? PART_RETRY_BASE_DELAY_MS;
+  const maxRounds = options.maxRounds ?? MAX_PART_ROUNDS;
+  const totalBytes = options.parts.reduce((total, part) => total + part.sizeBytes, 0);
+
+  /** Per-round claim state, plus the error that makes a round final rather than retryable. */
+  type SendState = { claimed: boolean; fatalError?: Error };
+  const parts: (UploadPartToSend & SendState)[] = options.parts.map((part) => ({
+    ...part,
+    claimed: false,
+  }));
+
+  const receivedParts = new Set<number>();
+  // Bytes confirmed by the server, and — separately — what each part still in flight has handed to
+  // the socket. Several parts are in the air at once, so the reported figure has to be the sum of
+  // both; reporting only whichever part spoke last makes it jump backwards.
+  const inFlightBytes = new Map<number, number>();
+  let confirmedBytes = 0;
+  const report = (): void => {
+    let inFlight = 0;
+    for (const sent of inFlightBytes.values()) inFlight += sent;
+    options.onProgress?.(Math.min(totalBytes, confirmedBytes + inFlight));
+  };
+
+  const semaphore = new Semaphore(concurrency);
+
+  for (let round = 1; ; round += 1) {
+    const missing = parts.filter((part) => !receivedParts.has(part.partNumber));
+    if (missing.length === 0) break;
+    // Parts are retried across rounds, so the claim flags from the previous round have to be
+    // cleared. Leaving them set means every worker immediately finds nothing left to do: the round
+    // ends having sent nothing, and the upload is finalized with parts still missing.
+    for (const part of missing) part.claimed = false;
+
+    let resuming = false;
+    let fatalSeen = false;
+
+    const workers = Array.from({ length: Math.min(concurrency, missing.length) }, async () => {
+      while (true) {
+        const part = missing.find((candidate) => !candidate.claimed);
+        if (part === undefined) break;
+        part.claimed = true;
+
+        await semaphore.acquire();
+        try {
+          if (options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+          await uploadPartWithRetry(
+            options.api,
+            {
+              uploadId: options.uploadId,
+              partNumber: part.partNumber,
+              body: part.blob,
+              ...(part.checksum === undefined ? {} : { checksumSha256: part.checksum }),
+              signal: options.signal,
+              onProgress: (sent) => {
+                // Held per part number, so it adds to the confirmed total instead of replacing it.
+                inFlightBytes.set(part.partNumber, sent);
+                report();
+              },
+            },
+            options.signal,
+            retryBaseDelayMs,
+          );
+          // Stored: its bytes belong to the confirmed total now, and its in-flight entry is
+          // retired so the next report cannot count it twice.
+          inFlightBytes.delete(part.partNumber);
+          receivedParts.add(part.partNumber);
+          confirmedBytes += part.sizeBytes;
+          report();
+        } catch (error) {
+          // An unconfirmed part contributes nothing to the reported total.
+          inFlightBytes.delete(part.partNumber);
+          report();
+          // A cancel or a definitive refusal is final. So is a transient failure once the rounds
+          // are spent — only then is the part out of chances.
+          if (
+            options.signal.aborted ||
+            isAuthFailure(error) ||
+            !isTransientFailure(error) ||
+            round >= maxRounds
+          ) {
+            fatalSeen = true;
+            part.fatalError = error as Error;
+          } else {
+            resuming = true;
+          }
+        } finally {
+          semaphore.release();
+        }
+      }
+    });
+
+    await Promise.all(workers);
+    if (fatalSeen) {
+      const fatal = parts.find((part) => part.fatalError !== undefined);
+      if (fatal !== undefined) throw fatal.fatalError!;
+    }
+    if (!resuming) break;
+
+    // Some parts exhausted their attempts this round; re-check server progress before resuming, so
+    // the next round neither re-sends what has already landed nor counts it twice.
+    const progress = await options.api
+      .uploadStatus(options.uploadId, options.signal)
+      .catch(() => null);
+    if (progress !== null) {
+      // The server names the parts it holds, so this is an exact answer rather than a guess: a
+      // part listed here is never re-sent (the provider refuses a duplicate) and a part missing
+      // from it always is.
+      for (const partNumber of progress.partsReceived) receivedParts.add(partNumber);
+      confirmedBytes = parts.reduce(
+        (total, part) => total + (receivedParts.has(part.partNumber) ? part.sizeBytes : 0),
+        0,
+      );
+      report();
+    }
+    await wait(retryDelay(retryBaseDelayMs, PART_RETRY_ATTEMPTS), options.signal);
+  }
+
+  return confirmedBytes;
 }
 
 export function useUploadQueue(): UploadQueueValue {
@@ -298,64 +490,25 @@ export function UploadQueueProvider({
           return;
         }
 
-        let uploadedBytes = 0;
-        const receivedParts = new Set<number>();
-        // The inner loop sends the missing parts once. Only a part that is genuinely transient and
-        // has used up every retry starts another round; anything else is reported as it happened.
-        for (let round = 1; ; round += 1) {
-          let resuming = false;
-          for (const part of partsPlan.parts) {
-            if (receivedParts.has(part.partNumber)) continue;
+        // Prepare all part blobs and checksums up front so retries don't recompute them.
+        const partData: UploadPartToSend[] = await Promise.all(
+          partsPlan.parts.map(async (part) => {
             const blob = file.slice(part.start, part.end);
             const checksum = await sha256HexOfBlob(blob);
-            try {
-              await uploadPartWithRetry(
-                api,
-                {
-                  uploadId: initiated.uploadId,
-                  partNumber: part.partNumber,
-                  body: blob,
-                  ...(checksum === undefined ? {} : { checksumSha256: checksum }),
-                  signal: controller.signal,
-                  onProgress: (sent) => {
-                    patch(item.id, { uploadedBytes: uploadedBytes + sent });
-                  },
-                },
-                controller.signal,
-              );
-            } catch (error) {
-              // A cancel or a definitive refusal (a refused size, a validation error, a dead
-              // session) is final and rethrown untouched, so the queue reports the real reason.
-              if (
-                controller.signal.aborted ||
-                isAuthFailure(error) ||
-                !isTransientFailure(error) ||
-                round >= MAX_PART_ROUNDS
-              ) {
-                throw error;
-              }
-              resuming = true;
-              break;
-            }
-            receivedParts.add(part.partNumber);
-            uploadedBytes = part.end;
-            patch(item.id, { uploadedBytes });
-          }
-          if (!resuming) break;
-          // Ask the server how far it actually got, keep those parts, pause for the edge to
-          // recover, then resume only the ones still missing.
-          const progress = await api
-            .uploadStatus(initiated.uploadId, controller.signal)
-            .catch(() => null);
-          if (progress !== null) {
-            for (const part of partsPlan.parts) {
-              if (part.partNumber <= progress.partsReceived) receivedParts.add(part.partNumber);
-            }
-            uploadedBytes = partsPlan.parts[progress.partsReceived - 1]?.end ?? uploadedBytes;
-            patch(item.id, { uploadedBytes });
-          }
-          await wait(retryDelay(PART_RETRY_BASE_DELAY_MS, PART_RETRY_ATTEMPTS), controller.signal);
-        }
+            return { partNumber: part.partNumber, sizeBytes: part.sizeBytes, blob, checksum };
+          }),
+        );
+
+        // Sending the parts is one extracted, tested unit: bounded concurrency, a retry per part,
+        // and a round over the parts that exhaust theirs. It reports bytes the server confirmed
+        // plus bytes in flight, so the row never shows more or less than has really been sent.
+        await transferParts({
+          api,
+          uploadId: initiated.uploadId,
+          parts: partData,
+          signal: controller.signal,
+          onProgress: (uploadedBytes) => patch(item.id, { uploadedBytes }),
+        });
 
         patch(item.id, { phase: 'finalizing' });
         let completed = await completeUploadWithRetry(api, initiated.uploadId, controller.signal);

@@ -7,7 +7,7 @@ import { Menu } from '../components/Menu.js';
 import { usePrefs } from '../state/prefs.js';
 import { useSystem } from '../state/system.js';
 import { useUploadQueue } from '../state/uploadQueue.js';
-import { useSession } from '../lib/auth/session.js';
+import { describePrincipal, useSession } from '../lib/auth/session.js';
 import { UploadTray } from '../upload/UploadTray.js';
 import { Sidebar } from './Sidebar.js';
 import { StorageMeter } from './StorageMeter.js';
@@ -38,18 +38,24 @@ export function Shell({
 }) {
   const { prefs, toggleTheme } = usePrefs();
   const { me } = useSystem();
-  const { state, signOut } = useSession();
+  const { state, signOut, principals, activeKey, switchPrincipal } = useSession();
   const queue = useUploadQueue();
   const navigate = useNavigate();
   const [navOpen, setNavOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  const active = principals.find((principal) => principal.key === activeKey) ?? null;
   const principalLabel =
-    state.kind === 'signed-in'
-      ? (state.session.email ?? state.session.displayName ?? 'Signed in')
-      : state.kind === 'anonymous'
-        ? 'Anonymous session'
-        : 'Signed out';
+    active !== null
+      ? describePrincipal(active)
+      : state.kind === 'signed-in'
+        ? (state.session.email ?? state.session.displayName ?? 'Signed in')
+        : state.kind === 'anonymous'
+          ? 'Anonymous session'
+          : 'Signed out';
+  // Every principal the tab is holding, so switching is reachable from anywhere in the app rather
+  // than only from Account.
+  const otherPrincipals = principals.filter((principal) => principal.key !== activeKey);
 
   useEffect(() => {
     document.title = `${title} · OpenDrive`;
@@ -108,16 +114,33 @@ export function Shell({
         keywords: 'theme dark light appearance',
         run: toggleTheme,
       },
+      ...otherPrincipals.map((principal) => ({
+        id: `session.switch.${principal.key}`,
+        label: `Switch to ${describePrincipal(principal)}`,
+        icon: 'user' as const,
+        keywords: 'account switch identity',
+        run: () => switchPrincipal(principal.key),
+      })),
       {
         id: 'session.signout',
-        label: 'Sign out',
+        label: principals.length > 1 ? `Sign out of ${principalLabel}` : 'Sign out',
         icon: 'sign-out',
         keywords: 'logout leave',
         run: () => void signOut(),
       },
     ];
     return [...global, ...extraCommands];
-  }, [navigate, prefs.theme, toggleTheme, signOut, extraCommands]);
+  }, [
+    navigate,
+    prefs.theme,
+    toggleTheme,
+    signOut,
+    extraCommands,
+    otherPrincipals,
+    principals.length,
+    principalLabel,
+    switchPrincipal,
+  ]);
 
   return (
     <div className={`shell${navOpen ? ' shell--nav-open' : ''}`}>
@@ -195,10 +218,16 @@ export function Shell({
                   icon: 'key',
                   onSelect: () => void navigate('/account'),
                 },
+                ...otherPrincipals.map((principal) => ({
+                  id: `session.switch.${principal.key}`,
+                  label: `Switch to ${describePrincipal(principal)}`,
+                  icon: 'user' as const,
+                  onSelect: () => switchPrincipal(principal.key),
+                })),
                 {
                   id: 'session.signout',
-                  label: 'Sign out',
-                  icon: 'sign-out',
+                  label: principals.length > 1 ? `Sign out of ${principalLabel}` : 'Sign out',
+                  icon: 'sign-out' as const,
                   danger: true,
                   onSelect: () => void signOut(),
                 },

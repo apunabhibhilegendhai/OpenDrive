@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import type { ApiKeyRecord, CreatedApiKeyRecord } from '@opendrive/shared';
 import { Shell } from '../shell/Shell.js';
 import { Icon } from '../components/Icon.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
-import { useApi, useSession } from '../lib/auth/session.js';
+import { describePrincipal, useApi, useSession } from '../lib/auth/session.js';
 import { describeFailure } from '../lib/api/errors.js';
 import { formatBytes } from '../lib/format.js';
 import { formatTimestamp } from '../files/presentation.js';
@@ -19,12 +20,55 @@ import { useToasts } from '../components/ToastRegion.js';
  *
  * An anonymous session has no account to manage and no key administration: the API refuses key
  * routes to it, so the interface does not offer them.
+ *
+ * "Sessions on this device" is where the multi-principal flows surface: switching between the
+ * credentials this tab holds, and moving an anonymous session's files into the signed-in account.
+ * The button calls the real endpoint and reports what the server said it moved — including the
+ * folders it renamed and the unfinished uploads it closed.
  */
+
+/** One sentence describing what a migration moved, from the server's own counts. */
+function describeMigration(outcome: {
+  alreadyMigrated: boolean;
+  files: { count: number; bytes: number };
+  folders: { count: number };
+  skippedIncompleteFiles: number;
+  folderRenames: { from: string; to: string }[];
+}): string {
+  const plural = (count: number, one: string, many: string) =>
+    `${count} ${count === 1 ? one : many}`;
+  const parts = [
+    plural(outcome.files.count, 'file', 'files'),
+    outcome.folders.count > 0 ? plural(outcome.folders.count, 'folder', 'folders') : null,
+    outcome.skippedIncompleteFiles > 0
+      ? `${plural(outcome.skippedIncompleteFiles, 'unfinished upload', 'unfinished uploads')} closed`
+      : null,
+    outcome.folderRenames.length > 0
+      ? `${plural(outcome.folderRenames.length, 'folder', 'folders')} renamed to avoid a clash`
+      : null,
+  ].filter((part): part is string => part !== null);
+  return `${outcome.alreadyMigrated ? 'Already in this account: ' : 'Moved into this account: '}${parts.join(', ')}.`;
+}
 export function AccountRoute() {
   const api = useApi();
-  const { state, epoch } = useSession();
+  const {
+    state,
+    epoch,
+    principals,
+    activeKey,
+    switchPrincipal,
+    forgetPrincipal,
+    canMigrate,
+    migrateAnonymousPrincipal,
+  } = useSession();
   const { me } = useSystem();
   const { notify } = useToasts();
+  const [migratingKey, setMigratingKey] = useState<string | null>(null);
+  const [migrationReport, setMigrationReport] = useState<{
+    key: string;
+    text: string;
+    failed: boolean;
+  } | null>(null);
   const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
   const [keysError, setKeysError] = useState<string | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -83,6 +127,19 @@ export function AccountRoute() {
     }
   };
 
+  const migrate = async (key: string) => {
+    setMigratingKey(key);
+    setMigrationReport(null);
+    const result = await migrateAnonymousPrincipal(key);
+    setMigratingKey(null);
+    if (!result.ok) {
+      setMigrationReport({ key, text: result.error, failed: true });
+      return;
+    }
+    setMigrationReport({ key, text: describeMigration(result.outcome), failed: false });
+    notify(describeMigration(result.outcome), 'success');
+  };
+
   const quota = me?.quota;
 
   return (
@@ -139,6 +196,103 @@ export function AccountRoute() {
             </div>
           </dl>
         )}
+      </section>
+
+      <section className="panel statuspanel">
+        <h2 className="statuspanel__title">Sessions on this device</h2>
+        <p className="statuspanel__copy">
+          This tab can hold more than one credential at once — an account and the anonymous session
+          you uploaded with, or two accounts. Switching changes which credential the next request
+          carries, and the API re-derives identity from that credential alone: nothing here grants
+          access to anyone else’s data.
+        </p>
+        {principals.length === 0 ? (
+          <p className="dim">No session is active. Sign in to continue.</p>
+        ) : (
+          <ul className="sessionlist">
+            {principals.map((principal) => {
+              const isActive = principal.key === activeKey;
+              const report = migrationReport?.key === principal.key ? migrationReport : null;
+              return (
+                <li key={principal.key} className="sessionlist__row">
+                  <div className="sessionlist__head">
+                    <span className="sessionlist__name">{describePrincipal(principal)}</span>
+                    <span className="tag tag--plain">
+                      {principal.kind === 'user' ? 'account' : 'anonymous session'}
+                    </span>
+                    {isActive && <span className="tag">active</span>}
+                  </div>
+
+                  {principal.expiresAt !== null && (
+                    <p className="dim sessionlist__meta">
+                      {principal.refreshable
+                        ? `Renewable until ${formatTimestamp(principal.expiresAt)}`
+                        : `Held token expires ${formatTimestamp(principal.expiresAt)}; this one cannot be renewed, so sign in again if it lapses.`}
+                    </p>
+                  )}
+
+                  <div className="sessionlist__actions">
+                    {!isActive && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => switchPrincipal(principal.key)}
+                      >
+                        <Icon name="user" size={16} />
+                        Switch to this session
+                      </button>
+                    )}
+                    {principal.kind === 'anonymous' && (
+                      <button
+                        type="button"
+                        className="btn btn--primary"
+                        disabled={!canMigrate || migratingKey !== null}
+                        onClick={() => void migrate(principal.key)}
+                      >
+                        <Icon name="upload" size={16} />
+                        {migratingKey === principal.key
+                          ? 'Moving…'
+                          : 'Move its files into this account'}
+                      </button>
+                    )}
+                    {!isActive && (
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        onClick={() => forgetPrincipal(principal.key)}
+                      >
+                        Forget this session
+                      </button>
+                    )}
+                  </div>
+
+                  {principal.kind === 'anonymous' && !canMigrate && (
+                    <p className="dim sessionlist__meta">
+                      <Icon name="info" size={15} /> Only an account can receive a session’s files.{' '}
+                      <Link to="/signin?add=1">Sign in</Link> and its files move here without
+                      re-uploading.
+                    </p>
+                  )}
+
+                  {report !== null && (
+                    <p
+                      className={report.failed ? 'sessionlist__error' : 'sessionlist__note'}
+                      role={report.failed ? 'alert' : 'status'}
+                    >
+                      <Icon name={report.failed ? 'alert' : 'info'} size={15} />
+                      {report.text}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <p className="statuspanel__copy">
+          Holding a second account is a convenience, not a second identity: it is only a credential
+          kept in this tab’s memory for as long as the tab is open.{' '}
+          <Link to="/signin?add=1">Add another account</Link> — you will be returned here.
+        </p>
       </section>
 
       {quota !== undefined && (

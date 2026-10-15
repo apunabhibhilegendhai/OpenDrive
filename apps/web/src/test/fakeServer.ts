@@ -2,6 +2,7 @@ import type {
   FileRecord,
   FolderRecord,
   LimitsResponse,
+  MigrateAnonymousSessionResponse,
   ReadinessResponse,
 } from '@opendrive/shared';
 
@@ -278,6 +279,22 @@ export function meFixture(overrides: { principalKind?: 'user' | 'anonymous' } = 
   };
 }
 
+export function migrationFixture(
+  overrides: Partial<MigrateAnonymousSessionResponse> = {},
+): MigrateAnonymousSessionResponse {
+  return {
+    sessionId: 'sess_00000000000000000000000002',
+    targetUserId: '11111111-1111-4111-8111-111111111111',
+    migratedAt: '2026-10-14T09:30:00.000Z',
+    alreadyMigrated: false,
+    files: { count: 2, bytes: 8192 },
+    folders: { count: 1 },
+    skippedIncompleteFiles: 0,
+    folderRenames: [],
+    ...overrides,
+  };
+}
+
 /** The default route set: enough of the API for the drive, status and account screens. */
 export function defaultRoutes(
   options: {
@@ -286,10 +303,13 @@ export function defaultRoutes(
     storage?: 'ok' | 'not_configured';
     meKind?: 'user' | 'anonymous';
     limits?: Partial<LimitsResponse>;
+    migration?: Partial<MigrateAnonymousSessionResponse>;
   } = {},
 ): FakeRoute[] {
   const files = options.files ?? [fileFixture()];
   const folders = options.folders ?? [];
+  /** Which account each migrated session credential went to, so a repeat is idempotent. */
+  const migrated = new Map<string, string>();
 
   return [
     {
@@ -354,6 +374,46 @@ export function defaultRoutes(
           expiresAt: '2026-10-13T10:00:00.000Z',
         },
       }),
+    },
+    {
+      method: 'POST',
+      path: '/api/v1/identity/migrations',
+      /**
+       * The migration route, with the parts of its authorization the client must not get wrong:
+       * a signed-in account is required, the session credential travels in its own header, and a
+       * credential already claimed by a *different* account is refused without naming that account.
+       */
+      respond: (request) => {
+        const authorization = request.headers['authorization'] ?? '';
+        if (!authorization.startsWith('Bearer ')) {
+          return problem(
+            401,
+            'UNAUTHENTICATED',
+            'Sign in to an account before migrating an anonymous session.',
+          );
+        }
+        const credential = request.headers['x-anonymous-credential'] ?? '';
+        if (credential === '') {
+          return problem(400, 'VALIDATION_FAILED', 'The anonymous session credential is required.');
+        }
+        const holder = authorization.slice('Bearer '.length);
+        const previous = migrated.get(credential);
+        if (previous !== undefined && previous !== holder) {
+          return problem(
+            409,
+            'CONFLICT',
+            'That session has already been migrated to another account.',
+          );
+        }
+        migrated.set(credential, holder);
+        return {
+          status: previous === undefined ? 201 : 200,
+          body: migrationFixture({
+            ...options.migration,
+            alreadyMigrated: previous !== undefined,
+          }),
+        };
+      },
     },
   ];
 }

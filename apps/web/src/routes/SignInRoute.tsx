@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate, useNavigate } from 'react-router';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router';
 import { ChartTexture } from '../assets/ChartTexture.js';
 import { CompassRose } from '../assets/CompassRose.js';
 import { WaveBand } from '../assets/WaveBand.js';
@@ -22,10 +22,17 @@ import { API_BASE_URL } from '../lib/api/client.js';
  *
  * When the deployment has no auth service configured, the screen says so instead of offering a
  * form that cannot work.
+ *
+ * `?add=1` is the **add another account** variant: reached from the account menu while a principal
+ * is already active, it does not redirect away, and it returns to Account afterwards so the newly
+ * signed-in account can receive an anonymous session's files. Without the flag the screen keeps
+ * its original meaning — you are here because you are signed out.
  */
 export function SignInRoute() {
   const { state, authConfigured, signIn, signUp, startAnonymousSession } = useSession();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const addMode = params.get('add') === '1';
   const [mode, setMode] = useState<'sign-in' | 'create'>('sign-in');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -33,7 +40,7 @@ export function SignInRoute() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  if (state.kind === 'signed-in' || state.kind === 'anonymous') {
+  if (!addMode && (state.kind === 'signed-in' || state.kind === 'anonymous')) {
     return <Navigate to="/drive" replace />;
   }
 
@@ -55,7 +62,7 @@ export function SignInRoute() {
       );
       return;
     }
-    void navigate('/drive', { replace: true });
+    void navigate(addMode ? '/account' : '/drive', { replace: true });
   };
 
   const startAnonymous = async () => {
@@ -63,7 +70,7 @@ export function SignInRoute() {
     setError(null);
     const result = await startAnonymousSession();
     setBusy(false);
-    if (result.ok) void navigate('/drive', { replace: true });
+    if (result.ok) void navigate(addMode ? '/account' : '/drive', { replace: true });
     else setError(result.error ?? 'The API refused to open an anonymous session.');
   };
 
@@ -83,7 +90,11 @@ export function SignInRoute() {
             <h1 className="auth__title">
               Open<span className="auth__title-accent">Drive</span>
             </h1>
-            <p className="auth__tagline">Private cloud storage. Chart your own course.</p>
+            <p className="auth__tagline">
+              {addMode
+                ? 'Add another account. This tab keeps both credentials; switch between them from the account menu.'
+                : 'Private cloud storage. Chart your own course.'}
+            </p>
           </div>
         </header>
 
@@ -173,21 +184,30 @@ export function SignInRoute() {
         </div>
 
         <div className="auth__anon">
-          <h2 className="auth__anon-title">Upload without an account</h2>
+          <h2 className="auth__anon-title">
+            {addMode ? 'Not signed in yet?' : 'Upload without an account'}
+          </h2>
           <p className="auth__anon-copy">
-            The API issues an anonymous session credential for this tab. Each upload returns a
-            one-time deletion token — the only credential that can remove that file later — so keep
-            it if you want the file gone.
+            {addMode
+              ? 'Your current session stays active while you complete this form, so nothing you have uploaded is lost. Once signed in, Account offers to move an anonymous session’s files into the account.'
+              : 'The API issues an anonymous session credential for this tab. Each upload returns a one-time deletion token — the only credential that can remove that file later — so keep it if you want the file gone.'}
           </p>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void startAnonymous()}
-            disabled={busy}
-          >
-            <Icon name="upload" size={16} />
-            Start an anonymous session
-          </button>
+          {addMode ? (
+            <Link className="btn" to="/account">
+              <Icon name="chevron-right" size={16} />
+              Back to Account
+            </Link>
+          ) : (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void startAnonymous()}
+              disabled={busy}
+            >
+              <Icon name="upload" size={16} />
+              Start an anonymous session
+            </button>
+          )}
         </div>
 
         <footer className="auth__foot">
