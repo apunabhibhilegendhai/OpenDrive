@@ -398,8 +398,11 @@ export const uploadStateSchema = z.enum([
 /**
  * A resumable upload's progress, so an interrupted client can see which parts to re-send.
  *
- * `partsReceived` counts distinct accepted parts, not a contiguous prefix, because parts may
- * arrive out of order.
+ * `partsReceived` lists the distinct part numbers the server holds, ascending. It is deliberately
+ * not a count: parts may arrive out of order, so `[2, 3]` and `[1, 2]` are both "two parts" and a
+ * client told only the number would have to guess which ones to send again. Guessing the wrong way
+ * means either re-sending a part the provider refuses as a duplicate or skipping one that is
+ * genuinely missing and finalizing an object with a hole in it.
  */
 export const uploadStatusResponseSchema = z.object({
   uploadId: z.string().regex(ID_PATTERN.upload),
@@ -407,7 +410,7 @@ export const uploadStatusResponseSchema = z.object({
   state: uploadStateSchema,
   chunkSizeBytes: z.number().int().positive(),
   expectedParts: z.number().int().positive().nullable(),
-  partsReceived: z.number().int().nonnegative(),
+  partsReceived: z.array(z.number().int().positive()).describe('Part numbers held, ascending.'),
   expiresAt: z.iso.datetime(),
 });
 

@@ -262,8 +262,8 @@ describe('upload workflow', () => {
       url: `/api/v1/uploads/${initiated.uploadId}`,
       headers: bearer(account.token),
     });
-    expect(empty.json<{ state: string; partsReceived: number }>().state).toBe('initiated');
-    expect(empty.json<{ partsReceived: number }>().partsReceived).toBe(0);
+    expect(empty.json<{ state: string; partsReceived: number[] }>().state).toBe('initiated');
+    expect(empty.json<{ partsReceived: number[] }>().partsReceived).toEqual([]);
 
     // A completion before the bytes are present is refused, and the file does not become servable.
     const premature = await complete(account.token, initiated.uploadId);
@@ -275,8 +275,8 @@ describe('upload workflow', () => {
       url: `/api/v1/uploads/${initiated.uploadId}`,
       headers: bearer(account.token),
     });
-    expect(progress.json<{ state: string; partsReceived: number }>().state).toBe('in_progress');
-    expect(progress.json<{ partsReceived: number }>().partsReceived).toBe(1);
+    expect(progress.json<{ state: string; partsReceived: number[] }>().state).toBe('in_progress');
+    expect(progress.json<{ partsReceived: number[] }>().partsReceived).toEqual([1]);
 
     await completeOrFail(account.token, initiated.uploadId);
   });

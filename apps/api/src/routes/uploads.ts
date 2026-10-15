@@ -392,7 +392,9 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         summary: 'Upload progress',
         description:
           'Reports how far an upload has got, so a client that lost its connection can see which ' +
-          'parts still need sending. A session belonging to another principal answers 404.',
+          'parts still need sending. `partsReceived` names the parts the server holds rather than ' +
+          'counting them, because parts may arrive out of order. A session belonging to another ' +
+          'principal answers 404.',
         params: uploadParamsSchema,
         response: {
           200: uploadStatusResponseSchema,
@@ -412,7 +414,7 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         state: view.state,
         chunkSizeBytes: view.record.partSizeBytes,
         expectedParts: view.record.providerSession.expectedParts,
-        partsReceived: view.partsReceived.length,
+        partsReceived: [...view.partsReceived].sort((left, right) => left - right),
         expiresAt: view.record.expiresAt.toISOString(),
       };
     },
