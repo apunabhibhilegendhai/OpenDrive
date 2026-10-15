@@ -98,6 +98,38 @@ const environmentSchema = z.object({
   //
   PREVIEW_SIGNING_SECRET: optionalString,
   PREVIEW_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(3600),
+  //
+  // Edge cache. A local, non-authoritative copy of object bytes in front of the storage provider.
+  // It is derived state on the API host's own disk — never Postgres, never Redis — so losing it
+  // loses only speed. `EDGE_CACHE_MAX_BYTES` is an LRU budget, not a per-file gate: every size is
+  // cacheable, the least-recently-used entries are simply evicted to stay within the budget.
+  // See docs/EDGE-CACHE.md.
+  //
+  EDGE_CACHE_ENABLED: booleanFromEnv,
+  EDGE_CACHE_DIR: optionalString,
+  EDGE_CACHE_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(5 * 1024 ** 3),
+  EDGE_CACHE_TTL_SECONDS: z.coerce.number().int().positive().max(31_536_000).default(604_800),
+  //
+  // Cacheable delivery URLs. Like previews, a browser element cannot send an Authorization header,
+  // so a `/cdn` URL carries its own short-lived signed token; `EDGE_DELIVERY_SIGNING_SECRET` is the
+  // HMAC key and falls back to `PREVIEW_SIGNING_SECRET`, then `IP_HASH_SECRET`. Absent means the
+  // mint route answers `503` rather than signing under a default key.
+  //
+  EDGE_DELIVERY_SIGNING_SECRET: optionalString,
+  EDGE_DELIVERY_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(3600),
+  // `Cache-Control: max-age` advertised on `/cdn` responses. Safe to be long because the URL is
+  // version-bound: new bytes are a new version and therefore a new URL.
+  EDGE_PUBLIC_MAX_AGE_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(31_536_000)
+    .default(31_536_000),
   // Lifetime of a newly created anonymous session, in hours.
   ANONYMOUS_SESSION_TTL_HOURS: z.coerce.number().int().positive().max(8760).default(168),
   //
@@ -190,6 +222,27 @@ export interface ApiConfig {
   readonly preview: {
     readonly signingSecret: string | null;
     readonly tokenTtlSeconds: number;
+  };
+  /**
+   * The local edge cache that fronts the storage provider. `enabled` false (or no provider) means
+   * reads go straight to the provider. `dir` is a filesystem path; `maxBytes` is an LRU budget, not
+   * a per-file limit — every object size is cacheable.
+   */
+  readonly edgeCache: {
+    readonly enabled: boolean;
+    readonly dir: string;
+    readonly maxBytes: number;
+    readonly ttlSeconds: number;
+  };
+  /**
+   * Cacheable delivery URLs. `signingSecret` is the effective HMAC key — the dedicated
+   * `EDGE_DELIVERY_SIGNING_SECRET`, or `PREVIEW_SIGNING_SECRET`, or `IP_HASH_SECRET`; null disables
+   * delivery URLs. `publicMaxAgeSeconds` is the `Cache-Control: max-age` advertised on `/cdn`.
+   */
+  readonly delivery: {
+    readonly signingSecret: string | null;
+    readonly tokenTtlSeconds: number;
+    readonly publicMaxAgeSeconds: number;
   };
   /** Origin used to build share URLs. Falls back to the configured bind address in development. */
   readonly publicBaseUrl: string;
@@ -313,6 +366,20 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     preview: {
       signingSecret: readValue(env, 'PREVIEW_SIGNING_SECRET') ?? readValue(env, 'IP_HASH_SECRET'),
       tokenTtlSeconds: values.PREVIEW_TOKEN_TTL_SECONDS,
+    },
+    edgeCache: {
+      enabled: values.EDGE_CACHE_ENABLED ?? true,
+      dir: values.EDGE_CACHE_DIR ?? '.edge-cache',
+      maxBytes: values.EDGE_CACHE_MAX_BYTES,
+      ttlSeconds: values.EDGE_CACHE_TTL_SECONDS,
+    },
+    delivery: {
+      signingSecret:
+        readValue(env, 'EDGE_DELIVERY_SIGNING_SECRET') ??
+        readValue(env, 'PREVIEW_SIGNING_SECRET') ??
+        readValue(env, 'IP_HASH_SECRET'),
+      tokenTtlSeconds: values.EDGE_DELIVERY_TTL_SECONDS,
+      publicMaxAgeSeconds: values.EDGE_PUBLIC_MAX_AGE_SECONDS,
     },
     publicBaseUrl:
       values.PUBLIC_BASE_URL ??

@@ -2,6 +2,8 @@ import type { StorageProvider } from '@opendrive/shared';
 import { AppError } from '@opendrive/shared';
 import { MemoryStorageProvider } from '@opendrive/shared/storage/testing';
 import type { ApiConfig } from '../config.js';
+import { CachingStorageProvider } from './cache/caching-provider.js';
+import { DiskByteCache } from './cache/disk-byte-cache.js';
 import { TelegramHttpTransport } from './providers/telegram-transport.js';
 import { TelegramStorageProvider } from './providers/telegram.js';
 
@@ -63,6 +65,56 @@ export function requireStorageProvider(resolution: StorageResolution): StoragePr
     throw new AppError('STORAGE_UNAVAILABLE', { detail: resolution.detail });
   }
   return resolution.provider;
+}
+
+/**
+ * The resolved provider plus the edge cache that fronts it (or `null` when caching is off).
+ *
+ * The cache is non-authoritative derived state on this host's disk — never Postgres, never Redis.
+ * It exists to hide the storage provider's read latency behind a local copy, which matters most for
+ * the Telegram backend (~0.17 MiB/s). It is wiped with the ephemeral host, so it is an origin read
+ * cache, not a globally replicated CDN; see docs/EDGE-CACHE.md and docs/DECISIONS.md (D45).
+ */
+export interface EdgeCachedStorage {
+  readonly resolution: StorageResolution;
+  /** The cache to close on shutdown, or `null` when caching is disabled or no provider is attached. */
+  readonly cache: DiskByteCache | null;
+}
+
+/**
+ * Wraps a resolved provider with the local edge cache.
+ *
+ * Only the provider's read path changes: a cached object is served from disk, a miss is answered by
+ * the provider *and* copied into the cache in the background so the next read is local. A provider
+ * that is not attached is left alone, and the resolution's operator-facing `detail` gains one honest
+ * sentence about the cache so `/readyz` never implies the cache is a durability guarantee.
+ */
+export function applyEdgeCache(
+  resolution: StorageResolution,
+  config: ApiConfig,
+): EdgeCachedStorage {
+  if (resolution.provider === null || !config.edgeCache.enabled) {
+    return { resolution, cache: null };
+  }
+  const cache = new DiskByteCache({
+    dir: config.edgeCache.dir,
+    maxBytes: config.edgeCache.maxBytes,
+    ttlSeconds: config.edgeCache.ttlSeconds,
+  });
+  return {
+    resolution: {
+      ...resolution,
+      provider: new CachingStorageProvider(resolution.provider, {
+        cache,
+        backgroundFill: true,
+      }),
+      detail:
+        `${resolution.detail} A local edge cache fronts the provider ` +
+        `(${config.edgeCache.maxBytes}-byte LRU budget at "${config.edgeCache.dir}"); it is ` +
+        `non-authoritative and lost with this host.`,
+    },
+    cache,
+  };
 }
 
 /**

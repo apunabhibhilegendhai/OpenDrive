@@ -171,6 +171,13 @@ export const jobPayloads = {
       .describe('Must be explicitly set to false to delete anything.'),
     olderThan: z.iso.datetime(),
   }),
+  'maintenance.edge_cache_evict': z.object({
+    now: z.iso.datetime(),
+    dryRun: z
+      .boolean()
+      .default(true)
+      .describe('Must be explicitly set to false to evict; eviction already happens in-process.'),
+  }),
   'moderation.apply_takedown': z.object({
     reportId: z.string().regex(/^rpt_/),
     fileId: z.string().regex(/^file_/),
@@ -211,6 +218,16 @@ export const declaredJobs: JobDefinition[] = [
     phase: 'Phase 2',
     state: 'declared',
     summary: 'Find storage objects with no live metadata row (or the reverse) and reconcile them.',
+  },
+  {
+    name: 'maintenance.edge_cache_evict',
+    payload: jobPayloads['maintenance.edge_cache_evict'],
+    phase: 'Phase 5',
+    state: 'declared',
+    summary:
+      'Reclaim disk from the edge cache. The API already evicts least-recently-used entries in-process ' +
+      'on every write; this job exists only for a future multi-node edge, where eviction must be driven ' +
+      'centrally rather than by one process.',
   },
   {
     name: 'moderation.apply_takedown',

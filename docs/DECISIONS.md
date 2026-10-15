@@ -963,3 +963,97 @@ route"), and `tests/integration/src/shares.test.ts` ("renders a landing page tha
 inline and links the download route", "streams the shared bytes byte-exactly, and honours a range",
 "answers a revoked, unknown or spent link with the same unavailable page", "counts one open per page
 load and refuses the next past the cap").
+
+## D45. The edge cache is a local, non-authoritative decorator over the storage provider, bounded by an LRU byte budget
+
+**Chosen:** `CachingStorageProvider` implements the same `StorageProvider` interface and wraps the
+resolved provider, so every existing read and write path is unchanged. It changes exactly one thing:
+`openReadStream`. A cache **hit** is served from a local disk blob; a **miss** is answered by the
+provider _and_ starts a de-duplicated background fill (the whole object, streamed to a temp file and
+atomically renamed into place) so the **next** read — including the next byte range of the same video
+— is local. Every other method delegates, and the wrapper publishes the wrapped provider's own
+capabilities: the cache adds speed, never a capability the provider lacks. Bytes live in
+`EDGE_CACHE_DIR` (default `.edge-cache`) as content-addressed blobs keyed by
+`sha256(providerId \0 locator \0 size \0 checksum)` — never by the locator itself, which may be a
+credential-bearing Telegram path — with a small JSON index beside them. `EDGE_CACHE_MAX_BYTES`
+(default 5 GiB) is an **LRU budget, not a size gate**: any object is cacheable, and least-recently-used
+entries are evicted on every write to stay under it. Evidence is `fs` atomic rename (a reader can
+never observe a half-written blob; a size mismatch is treated as a miss) and `EDGE_CACHE_TTL_SECONDS`
+(default 7 days) after which an entry is re-fetched. `deleteObject` purges the blob before delegating,
+so a deleted object cannot be served from disk. The wrapper is applied in `applyEdgeCache` and wired
+in `services.ts`; a test-injected resolution bypasses it. The store is closed (index flushed)
+best-effort on server shutdown; a fill still in flight is abandoned, because the bytes are on the
+provider.
+
+**Why:** the storage bottleneck is Telegram's throttled read path (~0.17 MiB/s), and the API is the
+only component that may talk to the provider, so a local copy in front of it is the only place a
+second read can get faster. Making it a decorator rather than a new code path means the delivery
+surface, the owner route and the share route all benefit without changing, and the provider contract
+suite still applies to the wrapped provider unchanged. Background-fill (rather than a synchronous
+read-through) is what makes it work for video: a range read cannot populate a whole-object entry, so
+the fill must run in parallel with the first pass-through. A byte budget rather than a size cap
+honours "cache everything, any size" while still bounding disk. Keeping bytes off Postgres and Redis
+is the architecture's existing rule (D5, D20): the cache is derived state whose loss costs only speed.
+
+**Honest limits:** on the ephemeral GitHub Actions host this cache is **wiped with the runner**. It is
+a session-scoped _origin_ cache, not a geographically distributed CDN, and nothing is shared between
+nodes — a second instance re-fetches everything. The first read of any object is _slower_ than a
+direct read (the provider read plus a disk write), and a fill of a large object costs one full
+provider read even if only one range was requested. There is no `ETag`-based revalidation of a cached
+blob against the provider: freshness is the TTL plus the object's own immutability (a re-upload is a
+new object with a new key). Eviction is in-process and per-node, which is why
+`maintenance.edge_cache_evict` is _declared_ but not implemented: a single process does not need a job
+to evict, and a multi-node edge would. A 5 GiB budget of large objects is a small number of entries,
+so a low hit ratio under mixed traffic is expected and not a bug.
+
+**Guarded by:** `apps/api/src/storage/cache/caching-provider.test.ts` (the storage contract suite
+against the wrapper, fill-then-serve-without-touching-the-provider, range-from-cache, concurrent-fill
+de-duplication, per-object limit, purge-on-delete, failed-fill-is-a-miss, health reports cache state),
+`apps/api/src/storage/cache/disk-byte-cache.test.ts` (keying, commit/lookup/purge, partial-entry
+refusal, TTL staleness, LRU eviction, index reload drops missing blobs), and `apps/api/src/config.test.ts`
+(the new defaults).
+
+## D46. Cacheable delivery is a separate, version-bound signed URL — not the owner content route
+
+**Chosen:** `POST /api/v1/files/:fileId/delivery-url` (owner, scope `files:read`) returns
+`{ url, path, expiresAt }` where `path` is `/cdn/:fileId/:version?token=<token>` on the API origin,
+outside `API_PREFIX`. The token is `base64url("<fileId>.<version>.<expEpochSec>")` + `"."` + a hex
+HMAC-SHA256 over exactly that encoded payload; the key is HKDF-SHA256 (`info` =
+`opendrive/delivery-url/v1`) of `EDGE_DELIVERY_SIGNING_SECRET`, falling back to
+`PREVIEW_SIGNING_SECRET`, then `IP_HASH_SECRET`, with TTL `EDGE_DELIVERY_TTL_SECONDS` (default 3600).
+`version` is the **storage-object id** (`sobj_…`), so a re-upload is a new version and therefore a new
+URL. `GET /cdn/:fileId/:version` verifies the token, requires the file be servable, requires the
+active object's id to equal `version` (otherwise 404 — the old bytes are genuinely gone), and then
+streams through the same range machinery as D40 with `accept-ranges`, `etag` (the object checksum, or
+its id), `cache-control: public, max-age=<EDGE_PUBLIC_MAX_AGE_SECONDS>, immutable`, `if-none-match` →
+`304`, and `206`/`416` for ranges. Inline-safe types get `cross-origin-resource-policy: cross-origin`;
+everything else keeps same-origin. `security.ts` no longer overwrites a `cache-control` a route set
+for itself, and `server.ts` redacts the `token` query parameter from request logs. The route is
+`hide: true`: it answers bytes, not the JSON contract.
+
+**Why:** caching and the owner content route have opposite requirements. The owner route is
+`private, no-store` because it is keyed on a bearer credential and returns private metadata; a CDN or
+a browser cache must never store it. But a `<video>` that re-fetches every range through an
+authorization header cannot be cached at all, and the whole point of D45 is to make the second read
+cheap — including at a cache in front of the origin. A URL-borne, version-bound token is what allows
+`public, immutable`: the credential is scoped to one file and one version and dies on its own, and
+because `immutable` is only safe when the URL changes with the bytes, binding the token to the object
+id is not optional. Keeping this surface separate from `/files/:id/content` means neither contract has
+to compromise: the owner route stays uncacheable and authorization-checked, the delivery route stays
+cacheable and token-checked, and they share only the provider read.
+
+**Honest limits:** the token travels in the URL and therefore through `Referer` headers, history and
+(before redaction) logs — a short TTL bounds the damage but does not remove it, and anyone who holds a
+live URL can read the file until it expires. `public` means a shared proxy may serve the bytes to
+anyone who presents the same URL, which is the intended trade. The URL is only as immutable as the
+object-version binding: a file whose bytes are replaced gets a new object id and a new URL, but the
+_old_ URL now 404s rather than redirecting, so a client holding it must re-mint. A deployment with no
+delivery signing secret answers 503 at mint. And because the cache is per-host (D45), `public,
+immutable` at an external CDN would still be filled by re-fetching from this origin on a cache miss.
+
+**Guarded by:** `apps/api/src/delivery-tokens.test.ts` (mint/verify, expiry, version binding, tamper,
+wrong secret, payload encoding), and `tests/integration/src/delivery.test.ts` ("streams a cacheable
+delivery URL without a bearer credential", "serves the second read from the cache without touching
+the provider", "answers a byte range with 206 and marks a bad range 416", "revalidates with an ETag
+and answers 304", "refuses a tampered token, another file, and another version", "purges the cached
+bytes when the file is deleted").

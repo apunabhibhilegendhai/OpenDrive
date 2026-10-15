@@ -301,6 +301,25 @@ export const previewGrantSchema = z.object({
     .describe('After this instant the path answers 401 rather than bytes.'),
 });
 
+/**
+ * A short-lived, **cacheable** delivery URL for one file version.
+ *
+ * Unlike a preview grant, this URL is built to be cached: its response carries
+ * `Cache-Control: public, max-age, immutable`, and it is bound to the exact object version of the
+ * bytes. A re-upload produces a new version and therefore a new URL, so a cache can never serve
+ * stale bytes under an old one. `url` is absolute (built from `PUBLIC_BASE_URL`); `path` is the same
+ * URL relative to the API origin, for a client that already knows it.
+ */
+export const deliveryGrantSchema = z.object({
+  url: z.url().max(2048).describe('Absolute, cacheable URL for this file version.'),
+  path: z
+    .string()
+    .min(1)
+    .max(2048)
+    .describe('The same URL, relative to the API origin; carries the signed token.'),
+  expiresAt: z.iso.datetime().describe('After this instant the URL answers 401 rather than bytes.'),
+});
+
 export const folderRecordSchema = z.object({
   id: z.string().regex(ID_PATTERN.folder),
   owner: fileOwnerSchema,
@@ -498,6 +517,7 @@ export const abuseReportRequestSchema = z.object({
 
 export type FileRecord = z.infer<typeof fileRecordSchema>;
 export type PreviewGrant = z.infer<typeof previewGrantSchema>;
+export type DeliveryGrant = z.infer<typeof deliveryGrantSchema>;
 export type FolderRecord = z.infer<typeof folderRecordSchema>;
 export type CreateFolderRequest = z.infer<typeof createFolderRequestSchema>;
 export type UpdateFolderRequest = z.infer<typeof updateFolderRequestSchema>;

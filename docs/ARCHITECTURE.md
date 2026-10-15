@@ -99,6 +99,12 @@ download URLs or permanent retention:
   `STORAGE_CAPABILITY_UNSUPPORTED` instead of failing halfway through an upload.
 - `StorageProvider` covers initiate, part upload, whole-object upload, finalize, abort,
   metadata, ranged read, optional direct download URL, delete, usage and health.
+- Reads are fronted by a local **edge cache** (`CachingStorageProvider`), a decorator that serves a
+  hit from local disk and starts a background fill on a miss. It is non-authoritative derived state
+  on the API host's disk — never Postgres, never Redis — and adds no capability the provider lacks.
+  See [EDGE-CACHE.md](EDGE-CACHE.md). A signed, version-bound `/cdn` URL (D46) exposes the same bytes
+  as a `public, immutable` response so a browser element or proxy can cache them; the owner content
+  route stays `private, no-store`.
 - Uploads are stateful workflows: sessions have explicit states, `finalizeUpload` is
   idempotent, `abortUpload` is idempotent for repeated cleanup, `deleteObject` is idempotent,
   and duplicate part numbers are rejected rather than silently overwriting.
@@ -110,6 +116,7 @@ download URLs or permanent retention:
 | Data                                          | Authoritative store | Notes                                                             |
 | --------------------------------------------- | ------------------- | ----------------------------------------------------------------- |
 | File contents                                 | Storage provider    | Never Postgres, Redis, GitHub or CI artifacts                     |
+| Edge cache (local byte copy)                  | API host's disk     | Derived state; lost with the host; never authoritative            |
 | File metadata, shares, API keys, audit events | Postgres            | Redeployable API instances hold no state                          |
 | Rate-limit counters, short-lived job state    | Redis               | Must be reconstructible; losing Redis must not lose file metadata |
 | Upload progress                               | Postgres            | Survives an API restart so uploads can resume                     |
@@ -125,6 +132,9 @@ Failure handling that the design anticipates:
 - **Orphaned storage objects**: `storage_objects.state` can be `orphaned`; the
   `maintenance.cleanup_orphans` job reconciles both directions (object without metadata,
   metadata without object) and defaults to `dryRun: true`.
+- **Edge-cache growth**: the cache evicts least-recently-used entries in-process on every write, so
+  no job is needed on a single node. `maintenance.edge_cache_evict` is _declared_ for a future
+  multi-node edge, where central eviction would be required.
 
 ### Backup and restoration
 

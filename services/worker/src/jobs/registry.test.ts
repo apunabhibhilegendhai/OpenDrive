@@ -30,6 +30,7 @@ describe('JobRegistry registration rules', () => {
       'retention.expire_uploads',
       'retention.expire_shares',
       'maintenance.cleanup_orphans',
+      'maintenance.edge_cache_evict',
       'moderation.apply_takedown',
     ]);
   });

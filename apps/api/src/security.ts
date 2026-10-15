@@ -51,7 +51,12 @@ export function applySecurityHeaders(
   }
 
   if (!isCacheableAsset(url, docsPrefix)) {
-    // API responses include private metadata; never let a cache store them.
-    void reply.header('cache-control', 'no-store');
+    // API responses include private metadata; never let a cache store them. A route that
+    // *intentionally* serves cacheable bytes (the `/cdn` delivery surface) sets its own policy
+    // first — either an explicit `private, no-store` or a deliberate `public, immutable` — and is
+    // respected rather than overwritten, exactly like the CORP and CSP headers above.
+    if (reply.getHeader('cache-control') === undefined) {
+      void reply.header('cache-control', 'no-store');
+    }
   }
 }

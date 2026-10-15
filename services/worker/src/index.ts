@@ -24,6 +24,7 @@ const PAYLOAD_TEMPLATES: Record<JobName, unknown> = {
   'retention.expire_uploads': { olderThan: '2026-10-10T00:00:00.000Z' },
   'retention.expire_shares': { now: '2026-10-10T00:00:00.000Z' },
   'maintenance.cleanup_orphans': { dryRun: true, olderThan: '2026-10-10T00:00:00.000Z' },
+  'maintenance.edge_cache_evict': { now: '2026-10-10T00:00:00.000Z', dryRun: true },
   'moderation.apply_takedown': {
     reportId: 'rpt_0123456789012345678901234a',
     fileId: 'file_0123456789012345678901234a',

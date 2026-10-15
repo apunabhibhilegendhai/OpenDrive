@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import {
+  ANONYMOUS_CREDENTIAL_HEADER,
   AppError,
   UPLOAD_PART_CHECKSUM_HEADER,
   isAppError,
@@ -74,6 +75,15 @@ interface ProblemContext {
  */
 export function redactPreviewToken(url: string): string {
   return url.replace(/([?&]preview=)[^&#]*/i, '$1[redacted]');
+}
+
+/**
+ * A cacheable delivery URL carries its signing token in a `token` query parameter. The same
+ * reasoning applies as for a preview token: the default request logging includes `req.url`, so the
+ * parameter is hidden rather than the whole URL.
+ */
+export function redactDeliveryToken(url: string): string {
+  return url.replace(/([?&]token=)[^&#]*/i, '$1[redacted]');
 }
 
 /**
@@ -151,7 +161,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         }) => ({
           id: request.id,
           method: request.method,
-          url: redactShareToken(redactPreviewToken(request.url ?? '')),
+          url: redactShareToken(redactDeliveryToken(redactPreviewToken(request.url ?? ''))),
           host: request.host,
           remoteAddress: request.ip,
           remotePort: request.socket?.remotePort,
@@ -216,6 +226,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       'authorization',
       'x-deletion-token',
       'x-request-id',
+      // A migration call carries two credentials, and the second one travels in its own header.
+      // Without it listed the browser would refuse the request before the API ever saw it.
+      ANONYMOUS_CREDENTIAL_HEADER,
       UPLOAD_PART_CHECKSUM_HEADER,
     ],
     exposedHeaders: ['x-request-id', 'retry-after'],
@@ -319,6 +332,11 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       if (services.redis !== null) {
         // The plugin wires the client into its store but never closes it: that is ours to do.
         await services.redis.close();
+      }
+      // The edge cache is derived state; flushing its index is best-effort and must never block
+      // shutdown. A fill still in flight is simply abandoned — the bytes are on the provider.
+      if (services.edgeCache !== null) {
+        await services.edgeCache.close();
       }
     });
   }

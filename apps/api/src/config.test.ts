@@ -152,6 +152,37 @@ describe('loadConfig', () => {
     );
   });
 
+  it('defaults the edge cache on and derives the delivery key from the preview or IP-hash secret', () => {
+    const config = loadConfig({});
+    expect(config.edgeCache).toEqual({
+      enabled: true,
+      dir: '.edge-cache',
+      maxBytes: 5 * 1024 ** 3,
+      ttlSeconds: 604_800,
+    });
+    expect(config.delivery.publicMaxAgeSeconds).toBe(31_536_000);
+    expect(config.delivery.tokenTtlSeconds).toBe(3_600);
+    // Nothing to sign with: delivery URLs are unavailable and the mint route answers 503.
+    expect(config.delivery.signingSecret).toBeNull();
+
+    // The dedicated secret is preferred; the preview secret and then the IP-hash secret are
+    // fallbacks, so an existing deployment gains delivery URLs without a new variable.
+    expect(loadConfig({ EDGE_DELIVERY_SIGNING_SECRET: 'k' }).delivery.signingSecret).toBe('k');
+    expect(loadConfig({ PREVIEW_SIGNING_SECRET: 'p' }).delivery.signingSecret).toBe('p');
+    expect(loadConfig({ IP_HASH_SECRET: 'i' }).delivery.signingSecret).toBe('i');
+    expect(
+      loadConfig({ EDGE_DELIVERY_SIGNING_SECRET: 'k', PREVIEW_SIGNING_SECRET: 'p' }).delivery
+        .signingSecret,
+    ).toBe('k');
+
+    // The cache can be switched off entirely, and an invalid TTL is a startup failure, not a
+    // silently substituted default.
+    expect(loadConfig({ EDGE_CACHE_ENABLED: 'false' }).edgeCache.enabled).toBe(false);
+    expect(() => loadConfig({ EDGE_DELIVERY_TTL_SECONDS: '0' })).toThrow(
+      /Invalid OpenDrive API configuration/,
+    );
+  });
+
   it('keeps third-party secrets out of the resolved configuration surface', () => {
     const config = loadConfig({
       SUPABASE_SERVICE_ROLE_KEY: 'super-secret-value',

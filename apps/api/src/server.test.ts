@@ -7,7 +7,12 @@ import {
   readinessResponseSchema,
 } from '@opendrive/shared';
 import { loadConfig } from './config.js';
-import { buildServer, redactPreviewToken, redactShareToken } from './server.js';
+import {
+  buildServer,
+  redactDeliveryToken,
+  redactPreviewToken,
+  redactShareToken,
+} from './server.js';
 
 const openServers: FastifyInstance[] = [];
 
@@ -217,6 +222,17 @@ describe('log redaction', () => {
     expect(redactPreviewToken('/api/v1/files?preview=abc&limit=5')).toBe(
       '/api/v1/files?preview=[redacted]&limit=5',
     );
+  });
+
+  it('redacts a delivery token in a query string without hiding the path', () => {
+    expect(redactDeliveryToken('/cdn/file_x/sobj_y?token=abc.def')).toBe(
+      '/cdn/file_x/sobj_y?token=[redacted]',
+    );
+    expect(redactDeliveryToken('/cdn/file_x/sobj_y?token=abc.def&download=1')).toBe(
+      '/cdn/file_x/sobj_y?token=[redacted]&download=1',
+    );
+    expect(redactDeliveryToken('/cdn/file_x/sobj_y')).toBe('/cdn/file_x/sobj_y');
+    expect(redactDeliveryToken('/healthz')).toBe('/healthz');
   });
 
   it('redacts a share token in a path without hiding the route', () => {
