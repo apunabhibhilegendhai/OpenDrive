@@ -185,6 +185,44 @@ Per `docs/ROADMAP.md`:
 
 ---
 
+## 2026-10-14 — the two multi-user flows, verified live against the self-hosted instance
+
+### Anonymous session → account migration (API)
+- `POST /api/v1/identity/migrations` (`apps/api/src/routes/migration.ts`). The request carries **two** credentials: `Authorization: Bearer <Supabase access token>` — the destination account, taken from the verified identity — and `X-Anonymous-Credential: ods_…` — the session whose resources move, whose possession is the ownership proof. There is no request field that can name an account or a session; the route has no body schema at all.
+- Refusals: `401` for no credential or a malformed/revoked/expired session credential, `403` for an anonymous caller (no account to migrate into) and for an API key (`account:manage` is session-only — a key must not be able to absorb another principal's files), `400` naming the header when it is absent, `409` for a session already migrated (idempotent for the account that received it, and never naming that account for anybody else), `429` when the session does not fit the account's quota.
+- The transfer is **one statement** inside the locked transaction (`transferSessionOwnership`): live folders and durable files move, unfinished uploads are closed, already-deleted rows are detached, the deletion tokens are cleared, and the quota holds are released. It has to be one statement *and* deferred: `files_folder_same_owner` and `folders_parent_same_owner` are immediate composite keys over `owner_key`, so no ordering of the work is valid.
+- What happens to the anonymous credential afterwards: the session is revoked in the same statement that records the migration, so the credential stops authenticating immediately; its one-time deletion tokens go with it.
+
+### Account switching (web)
+- `apps/web/src/lib/auth/session.tsx` holds several principals in memory — an account and/or an anonymous session — and switching changes which credential the next request carries. Only the Supabase SDK's own session can be refreshed; a second account is held by its access token alone and is dropped with a notice when it expires.
+- A switch bumps `epoch`, which every data hook depends on, so the previous principal's rows and in-flight responses are dropped. Nothing is persisted: the list lives as long as the tab does.
+- UI: the account menu switches between held principals (`/signin?add=1` adds another account and returns to Account); Account's "Sessions on this device" panel lists them, migrates an anonymous session, and forgets a held one.
+
+### Schema: three new additive migrations, all applied to the live instance
+- `20261014000001_anonymous_session_migration.sql` (live `104-…`) — the migration record on `anonymous_sessions` (`migrated_at`, `migrated_to_user_id` with ON DELETE RESTRICT, four recorded counts), one check constraint that keeps the record coherent, a partial index, and the invariant that a migrated session is revoked.
+- `20261015000001_defer_ownership_constraints.sql` (live `105-…`) — both ownership composite keys become `deferrable initially immediate`, so only a transaction that asks for it (the transfer) gets its checks at COMMIT. Every other code path is unchanged.
+- `20261015000002_restore_grant_hardening.sql` (live `106-…`) — re-asserts 102's privilege hardening, which the live instance had lost.
+
+### Live verification (this is what `supabase/tests/live/` is for)
+- `supabase/tests/live/70_anonymous_migration_live.sql` is one `do` block that creates fixtures, asserts, and **rolls itself back** — a pass reads `VERIFIED n checks (rolled back): …` from the runner's error field. It was executed against the self-hosted instance (`supabase.opendrive.indevs.in`, PostgreSQL 17.6) through `./remote.sh run` in the supabase-actions repo, immediately after 104–106 were pushed with `./remote.sh push` (their copies live in that repo's `supabase/migrations/` as `104`–`106-opendrive-*.sql`).
+- 33 checks: every new column and its type, the consistency constraint refusing each invalid combination, the FK that stops the receiving account from being deleted, the deferrable keys, a full transfer (parent and child folders, durable files inside them, an unfinished upload, a soft-deleted file and a soft-deleted folder), the recorded counts, the replay and cross-account refusals at the row level, tombstone handling, and the privilege surface.
+
+### Two defects that verification found (and their fixes)
+1. **The transfer's order was impossible.** Moving folders first was refused live by `files_folder_same_owner`, and moving files first is refused for the mirror-image reason; data-modifying CTEs can appear to work but PostgreSQL specifies no order for them. Fixed by deferring the two keys inside the transaction (105) and validating them again immediately after the transfer.
+2. **The live instance had re-granted every client privilege.** `anon` and `authenticated` each held the full ALL mask on every OpenDrive table — including `profiles`, `files`, `api_keys`, `anonymous_sessions` and `_schema_migrations`, which `anon` could SELECT. RLS was still enabled, so no data was readable, but it was exactly the gap 102 closed. Fixed by 106; the same run then asserted the narrow surface is back (`authenticated` keeps only its RLS surface, `anon` keeps nothing, `opendrive_app` untouched).
+
+### Tests added
+- API unit: `planMigrationRequest` (`apps/api/src/identity/migration.test.ts`) — the request guard in its testable form; removing the `account:manage` requirement makes it fail.
+- Web: `apps/web/src/routes/AccountRoute.test.tsx` — the migration call's exact headers, the disabled-with-a-reason control when only an anonymous session is active, the API's refusal shown verbatim with the credential kept, and switching between two held accounts with each request carrying the active one's token. Mutating `canMigrate` to `true` fails three of them.
+- Integration: `tests/integration/src/migration.test.ts` — end-to-end transfer, idempotent replay, cross-account 409 that never names the first account, credential refusals, quota refusal as a no-op, and rename-on-clash. **Not executed here:** it needs a real PostgreSQL over TCP, and this machine can only reach the instance over HTTPS through the `migrate` function.
+
+### What this environment could not execute (stated plainly)
+- `pnpm db:verify` / `pnpm db:test:integration` (no local psql, no TCP route to the instance; the SQL was verified live instead, as above).
+- Browser automation (e2e) if Playwright browsers are not installed here.
+- Redis: `redis.opendrive.indevs.in` serves the Redis Commander console over HTTP and the TCP relay is per-session (`bore.pub:<port>` from the workflow log), so no stable `redis://` endpoint exists for a dev machine yet. The API's wiring is unchanged — `REDIS_URL` → `ioredis`, fail-open when unreachable — and the readiness probe reports it honestly.
+
+---
+
 ## Suggested framing for the next-phase prompt
 
 If you're feeding this to an LLM to decide/prompt the next phase, the honest framing is:
@@ -194,3 +232,54 @@ If you're feeding this to an LLM to decide/prompt the next phase, the honest fra
 ---
 
 *Generated from a deep read of the repository on 2026-10-12. Numbers (test counts, check counts, file paths, env var names, limits) are taken from the actual files; the "honest limits" are quoted from the project's own docs/decisions.*
+
+---
+
+## 2026-10-14 — Vercel deployment of the web client, exercised on the deployed origin
+
+**What was deployed.** `apps/web` built from this working tree with
+`VITE_SUPABASE_URL=https://supabase.opendrive.indevs.in`, `VITE_API_BASE_URL=https://api.opendrive.indevs.in`
+and the publishable anon key, then uploaded with `vercel deploy apps/web/dist --prod` to the existing
+`opendrive` project (`prj_47d3DtxWvpdu1peSeQvpYlnuX2Cw`). That is the upload `web-host.yml` already
+performs (D38); no project setting was changed and no credential is in the workspace.
+
+| Artifact            | URL                                                    |
+| ------------------- | ------------------------------------------------------ |
+| immutable deployment | `https://opendrive-lq868x1vw-apunabhibhilegendhai.vercel.app` |
+| production alias     | `https://opendrive.indevs.in`                          |
+| bundle served        | `assets/index-BU9qvgPr.js`, `assets/index-C2r2wWKi.css`, `assets/dist-CMaqNW2J.js` |
+
+**Build logs:** `Build Completed in /vercel/output [35ms]`, `Deployment completed`, status Ready — no
+build or runtime error. The served `index.html` names `assets/index-BU9qvgPr.js`, the same hash the
+local build produced, so the deployment is this tree and not an older upload. Deep links (`/drive`,
+`/account`) answer `200 text/html` through the SPA rewrite.
+
+**Exercised on the deployed origin** (browser, no local server in the path):
+`POST /auth/v1/signup` on `supabase.opendrive.indevs.in` → 200 with a session, then
+`/api/v1/me`, `/api/v1/files?folder=root&limit=50` and `/api/v1/folders?parent=root&limit=100` → 200,
+and `POST /api/v1/folders` → 201 (the created folder renders, survives a reload, and is re-read from
+Postgres). The drive and account screens render identity, scopes, quota and the "Sessions on this
+device" panel from real responses. Browser console: empty. The API answers
+`access-control-allow-origin: https://opendrive.indevs.in`, so no request is refused for CORS.
+A throwaway verification account (`web-verify-20261014@opendrive.test`) exists on the self-hosted
+instance as a result; its password was generated inside the page and never written anywhere.
+
+**The API is deliberately not on Vercel.** It needs a raw TCP session to `db.opendrive.indevs.in`
+and `redis-tcp.opendrive.indevs.in`; both are Cloudflare Access TCP routes that only `cloudflared`
+can traverse, and Cloudflare's HTTP proxy drops port 5432 at the edge (measured here: `connect` to
+both hostnames times out; only 443 answers). A Vercel Function cannot run `cloudflared`, so the API
+stays on the runner + tunnel (docs/DEPLOYMENT.md), where `/readyz` reports postgres, auth, redis and
+storage all `ok`.
+
+**Outstanding after this deployment.** The deployed API is built from commit `1780666`, which does
+not contain the anonymous→account migration endpoint — `apps/api/src/identity/` and
+`apps/api/src/routes/migration.ts` are still untracked, so `POST /api/v1/identity/migrations`
+answers 404 on the live host while the bundle just published offers that flow. The client shows the
+refusal instead of a fabricated success, but the flow is only complete once the API host is rebuilt
+from a commit that includes it, which needs those files committed and pushed.
+
+**Test-timing change in the same pass.** `pnpm -r test` runs every package's suite concurrently, and
+that contention pushed `apps/api/src/openapi.test.ts` and four jsdom component tests past their
+budgets (5 s per test, 1 s per `findBy*` wait) on this machine — each file passes alone. The waits
+were raised (`testTimeout: 20_000` in `apps/api` and `apps/web`, `asyncUtilTimeout: 5_000` for the
+Testing Library) without touching a single assertion, and `pnpm verify` then exited 0.

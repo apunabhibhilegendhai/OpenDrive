@@ -3,10 +3,12 @@
 Private cloud storage and public file hosting: upload files, keep them private by default or
 share them through links you control, and delete them again.
 
-**Phase 1 status: identity, metadata and authorization, not file transfer.** A signed-in user
-and an anonymous visitor each own their own metadata — files, folders, shares, API keys — and the
-API decides who may see it from the database rather than from the request. **Files still cannot be
-uploaded or downloaded**, and nothing in this build pretends otherwise: every unimplemented
+**Status: identity, metadata, authorization and the transfer path are implemented; the bytes need a
+storage provider to exist.** A signed-in user and an anonymous visitor each own their own metadata —
+files, folders, shares, API keys — and the API decides who may see it from the database rather than
+from the request. Uploads, ranged downloads and deletion are real routes, but the default
+deployment has `STORAGE_PROVIDER=none`, so they answer `503 STORAGE_UNAVAILABLE` rather than
+pretending to store anything. Nothing unimplemented is dressed up as working: an unimplemented
 capability answers `501 Not Implemented` and names the phase that owns it.
 
 ## What works today
@@ -28,8 +30,11 @@ capability answers `501 Not Implemented` and names the phase that owns it.
 | Share links                                                                | Works: create, resolve, revoke, expiry and download counting; only the token digest is stored                                       |
 | Quota                                                                      | Works: per-principal limits with reservations, so two concurrent uploads cannot both pass the same allowance                        |
 | Audit events                                                               | Emitted for authentication, authorization refusals and share activity                                                               |
-| Uploads, downloads, deletion, abuse reports                                | **Not implemented** — routes published, answers `501`                                                                               |
-| Redis, malware scanning, storage provider, deployment                      | **Not implemented**; the only storage provider is a labelled test double                                                            |
+| Uploads, ranged downloads, deletion                                        | Implemented, and unusable until a provider is attached: with `STORAGE_PROVIDER=none` they answer `503` with the reason              |
+| Share link landing page (`/s/:token`)                                      | Works: renders the file's terms and streams it through `/s/:token/download`                                                         |
+| Abuse reports                                                              | **Not implemented** — route published, answers `501`                                                                                |
+| Storage providers                                                          | `memory-test` (a labelled test double, refused in production) and `telegram-experimental` (not production-validated)                |
+| Redis, malware scanning, deployment                                        | Redis is wired for shared rate-limit counters; scanning and production deployment are **not implemented**                           |
 
 Every "not implemented" row above is verifiable from the running API, not just from this table.
 
@@ -78,6 +83,7 @@ docs/              Architecture, security, storage providers, decisions, roadmap
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)               | Components, data ownership, large-file handling, reliability and backup rules                               |
 | [docs/SECURITY.md](docs/SECURITY.md)                       | Threat model, authorization, tokens, secrets, abuse controls, and what encryption can and cannot be claimed |
 | [docs/STORAGE-PROVIDERS.md](docs/STORAGE-PROVIDERS.md)     | Provider capability matrix and the Telegram evaluation (experimental, not production-validated)             |
+| [docs/EDGE-CACHE.md](docs/EDGE-CACHE.md)                   | The local edge cache in front of the provider and the cacheable signed `/cdn` delivery URLs                 |
 | [docs/SELF-HOSTED-BACKEND.md](docs/SELF-HOSTED-BACKEND.md) | The Supabase + Redis instance on GitHub Actions: topology, secrets, and its limits                          |
 | [docs/DECISIONS.md](docs/DECISIONS.md)                     | Why the stack and design choices were made                                                                  |
 | [docs/ROADMAP.md](docs/ROADMAP.md)                         | Phase plan and the Phase 1 prerequisites checklist                                                          |
@@ -95,6 +101,10 @@ docs/              Architecture, security, storage providers, decisions, roadmap
   is never a CDN or a delivery path for user-uploaded bytes.
 - Telegram storage is treated as an experiment with unresolved durability, limit and
   account-risk questions, not as free unlimited object storage.
+- The edge cache (see [docs/EDGE-CACHE.md](docs/EDGE-CACHE.md)) is a **non-authoritative origin
+  cache on the API host's own disk**, never Postgres or Redis. It is not a CDN: it is wiped with an
+  ephemeral host, it shares nothing between nodes, and the storage provider remains the only
+  authoritative copy of every byte.
 
 ## License
 
