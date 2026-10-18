@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FileRecord } from '@opendrive/shared';
 import { Icon } from '../components/Icon.js';
 import type { ApiClient } from '../lib/api/client.js';
@@ -34,6 +34,14 @@ const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 
 export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord }) {
   const [state, setState] = useState<PreviewState>({ status: 'loading' });
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const isMpegTs =
+    file.mimeType === 'video/mp2t' ||
+    file.mimeType === 'video/vnd.dlna.mpeg-tts' ||
+    file.filename.toLowerCase().endsWith('.ts') ||
+    file.filename.toLowerCase().endsWith('.m2ts') ||
+    file.filename.toLowerCase().endsWith('.mts');
 
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +84,47 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
     };
   }, [api, file]);
 
+  useEffect(() => {
+    if (state.status !== 'video' || !isMpegTs || videoRef.current === null) return;
+    const element = videoRef.current;
+    let player: any = null;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const mpegts = (await import('mpegts.js')).default;
+        if (cancelled || !mpegts.isSupported()) {
+          if (!cancelled) {
+            setState({
+              status: 'unavailable',
+              detail: 'Your browser cannot play this video format. Download it to open it.',
+            });
+          }
+          return;
+        }
+        player = mpegts.createPlayer(
+          { type: 'mpegts', isLive: false, url: state.url },
+          { enableWorker: true },
+        );
+        player.attachMediaElement(element);
+        player.load();
+        await player.play().catch(() => undefined);
+      } catch {
+        if (!cancelled) {
+          setState({
+            status: 'unavailable',
+            detail: 'Your browser cannot play this video format. Download it to open it.',
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      player?.destroy();
+    };
+  }, [state.status, state.url, isMpegTs]);
+
   return (
     <section className="preview" aria-label={`Preview of ${file.filename}`}>
       {state.status === 'loading' && (
@@ -89,8 +138,9 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
       )}
       {state.status === 'video' && (
         <video
+          ref={videoRef}
           className="preview__video"
-          src={state.url}
+          src={isMpegTs ? undefined : state.url}
           controls
           playsInline
           preload="metadata"
