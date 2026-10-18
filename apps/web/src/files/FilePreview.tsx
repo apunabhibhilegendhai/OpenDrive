@@ -103,8 +103,8 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
           return;
         }
         player = mpegts.createPlayer(
-          { type: 'mpegts', isLive: false, url: state.url },
-          { enableWorker: true },
+          { type: 'mpegts', isLive: false, url: state.url, cors: true },
+          { enableWorker: false },
         );
         player.attachMediaElement(element);
         player.load();
