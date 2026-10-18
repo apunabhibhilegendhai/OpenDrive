@@ -1,4 +1,4 @@
-import { isInlinePreviewable } from './mime.js';
+import { effectiveMimeTypeForFile, isInlinePreviewable } from './mime.js';
 
 /**
  * The public share landing page.
@@ -59,9 +59,9 @@ export type SharePreviewKind = 'image' | 'video' | 'audio';
  * Shares the inline allow-list with the content route, so the page never embeds a type the download
  * route would refuse to serve inline — the element would simply break.
  */
-export function previewKindFor(mimeType: string): SharePreviewKind | null {
-  if (!isInlinePreviewable(mimeType)) return null;
-  const bare = mimeType.split(';', 1)[0]!.trim().toLowerCase();
+export function previewKindFor(mimeType: string, filename?: string): SharePreviewKind | null {
+  if (!isInlinePreviewable(mimeType, filename)) return null;
+  const bare = effectiveMimeTypeForFile(mimeType, filename).split(';', 1)[0]!.trim().toLowerCase();
   if (bare.startsWith('image/')) return 'image';
   if (bare.startsWith('video/')) return 'video';
   if (bare.startsWith('audio/')) return 'audio';
@@ -231,7 +231,7 @@ function previewElement(kind: SharePreviewKind, src: string, filename: string): 
     case 'image':
       return `<img class="preview preview--image" src="${escapedSrc}" alt="${escapeHtml(filename)}">`;
     case 'video':
-      return `<video class="preview" src="${escapedSrc}" controls preload="metadata"></video>`;
+      return `<video class="preview" src="${escapedSrc}" controls preload="metadata">Your browser cannot play this video. Download it to open it.</video>`;
     case 'audio':
       return `<audio class="preview" src="${escapedSrc}" controls preload="metadata"></audio>`;
   }

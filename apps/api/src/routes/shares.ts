@@ -21,6 +21,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { REQUIRED_SCOPES, assertFileOwnership, ownerKeyOf, requireScope } from '../authz.js';
 import { contentDisposition } from '../content-disposition.js';
+import { effectiveMimeTypeForFile } from '../mime.js';
 import { toFileRecord, toShareRecord } from '../db/mappers.js';
 import type { FileEntity, ShareEntity } from '../db/entities.js';
 import { findFileById, findFileByIdForAccessCheck } from '../db/repositories/files.js';
@@ -370,7 +371,7 @@ export const shareRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servi
             filename: file.originalFilename,
             sizeBytes: file.sizeBytes,
             mimeType: file.mimeType,
-            previewKind: previewKindFor(file.mimeType),
+            previewKind: previewKindFor(file.mimeType, file.originalFilename),
             expiresAt: lookup.share.expiresAt,
             maxDownloads: lookup.share.maxDownloads,
             downloadCount,
@@ -423,11 +424,12 @@ export const shareRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servi
       }
 
       const read = await provider.openReadStream(object.ref, requested ?? undefined);
-      void reply.header('content-type', file.mimeType);
+      const servedType = effectiveMimeTypeForFile(file.mimeType, file.originalFilename);
+      void reply.header('content-type', servedType);
       void reply.header('content-length', String(read.length));
       void reply.header(
         'content-disposition',
-        contentDisposition(file.originalFilename, file.mimeType),
+        contentDisposition(file.originalFilename, servedType),
       );
       void reply.header('cache-control', 'private, no-store');
       if (read.range !== null) {
