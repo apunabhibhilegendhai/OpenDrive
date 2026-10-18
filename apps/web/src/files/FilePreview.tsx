@@ -88,7 +88,19 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
         <img className="preview__image" src={state.url} alt={file.filename} />
       )}
       {state.status === 'video' && (
-        <video className="preview__video" src={state.url} controls playsInline preload="metadata" />
+        <video
+          className="preview__video"
+          src={state.url}
+          controls
+          playsInline
+          preload="metadata"
+          onError={() =>
+            setState({
+              status: 'unavailable',
+              detail: 'Your browser cannot play this video format. Download it to open it.',
+            })
+          }
+        />
       )}
       {state.status === 'audio' && (
         <audio className="preview__audio" src={state.url} controls preload="metadata" />
