@@ -86,13 +86,57 @@ const INLINE_PREVIEW_TYPES = new Set([
  * even though the caller passes the already-effective type, so an unvalidated string can never
  * widen the allow-list.
  */
-export function isInlinePreviewable(mimeType: string | null | undefined): boolean {
+/** Best-effort MIME guess from a filename when the stored type is generic, so an already-uploaded
+ *  file whose browser-reported type was empty can still be served inline. */
+export function guessMimeTypeFromFilename(filename: string): string {
+  const extension = filename.toLowerCase().split('.').pop() ?? '';
+  switch (extension) {
+    case 'ts':
+    case 'm2ts':
+    case 'mts':
+    case 'm2t':
+      return 'video/mp2t';
+    case 'mp4':
+    case 'm4v':
+      return 'video/mp4';
+    case 'webm':
+      return 'video/webm';
+    case 'ogv':
+    case 'ogg':
+      return 'video/ogg';
+    case 'mov':
+      return 'video/quicktime';
+    case 'avi':
+      return 'video/x-msvideo';
+    case 'mkv':
+      return 'video/x-matroska';
+    case 'mpg':
+    case 'mpeg':
+      return 'video/mpeg';
+    case '3gp':
+      return 'video/3gpp';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/** Resolve the type we actually serve for a file, falling back to the filename when the stored
+ *  type is generic. */
+export function effectiveMimeTypeForFile(mimeType: string | null | undefined, filename?: string): string {
   const normalized = sanitizeMimeType(mimeType);
-  if (normalized === null) return false;
-  const bare = normalized.split(';', 1)[0]!.trim();
-  // Any audio or video type is safe to serve inline: none of them is an active document the
-  // way image/svg+xml or text/html is, and the browser itself decides whether it can render it.
-  // (Serving inline is a security decision here, not a capability claim.)
+  if (normalized !== null && normalized !== 'application/octet-stream') return normalized;
+  if (filename !== undefined && filename !== '') {
+    return guessMimeTypeFromFilename(filename);
+  }
+  return normalized ?? FALLBACK_MIME_TYPE;
+}
+
+export function isInlinePreviewable(
+  mimeType: string | null | undefined,
+  filename?: string,
+): boolean {
+  const resolved = effectiveMimeTypeForFile(mimeType, filename);
+  const bare = resolved.split(';', 1)[0]!.trim().toLowerCase();
   if (bare.startsWith('audio/') || bare.startsWith('video/')) return true;
   return INLINE_PREVIEW_TYPES.has(bare);
 }

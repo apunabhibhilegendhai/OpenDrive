@@ -42,7 +42,7 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
 
     void (async () => {
       try {
-        const family = familyOf(file.mimeType);
+        const family = familyOf(file.mimeType, file.filename);
         if (family === 'image' || family === 'video' || family === 'audio') {
           const grant = await api.createDeliveryUrl(file.id, controller.signal);
           if (!cancelled) setState({ status: family, url: grant.url });

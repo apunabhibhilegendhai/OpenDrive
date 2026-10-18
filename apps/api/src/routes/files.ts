@@ -27,7 +27,7 @@ import {
   markStorageObjectDeleted,
 } from '../db/repositories/storage-objects.js';
 import { contentDisposition } from '../content-disposition.js';
-import { isInlinePreviewable } from '../mime.js';
+import { effectiveMimeTypeForFile, isInlinePreviewable } from '../mime.js';
 import { decodeCursor } from '../pagination.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
@@ -184,7 +184,7 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         file = await findFileByIdForAccessCheck(sql, request.params.fileId);
         // A preview token only ever authorizes the inline-safe types it is minted for; a
         // non-previewable type answers the same 404 an unknown id does, revealing nothing.
-        if (file === null || !isInlinePreviewable(file.mimeType)) {
+        if (file === null || !isInlinePreviewable(file.mimeType, file.originalFilename)) {
           throw new AppError('NOT_FOUND', { detail: 'The resource does not exist.' });
         }
         embedded = true;
@@ -230,11 +230,12 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
       }
 
       const read = await provider.openReadStream(object.ref, requested ?? undefined);
-      void reply.header('content-type', file.mimeType);
+      const servedType = effectiveMimeTypeForFile(file.mimeType, file.originalFilename);
+      void reply.header('content-type', servedType);
       void reply.header('content-length', String(read.length));
       void reply.header(
         'content-disposition',
-        contentDisposition(file.originalFilename, file.mimeType),
+        contentDisposition(file.originalFilename, servedType),
       );
       void reply.header('cache-control', 'private, no-store');
       if (embedded) {

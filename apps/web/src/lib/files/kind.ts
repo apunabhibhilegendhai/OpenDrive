@@ -27,8 +27,37 @@ const STYLES: Record<FileFamily, FamilyStyle> = {
   other: { family: 'other', label: 'File', token: '--muted' },
 };
 
-export function familyOf(mimeType: string): FileFamily {
+const EXTENSION_MIME: Record<string, string> = {
+  ts: 'video/mp2t',
+  m2ts: 'video/mp2t',
+  mts: 'video/mp2t',
+  m2t: 'video/mp2t',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  ogv: 'video/ogg',
+  mov: 'video/quicktime',
+  avi: 'video/x-msvideo',
+  mkv: 'video/x-matroska',
+  mpg: 'video/mpeg',
+  mpeg: 'video/mpeg',
+  '3gp': 'video/3gpp',
+};
+
+function guessMimeTypeFromFilename(filename: string): string {
+  const extension = filename.toLowerCase().split('.').pop() ?? '';
+  return EXTENSION_MIME[extension] ?? 'application/octet-stream';
+}
+
+function resolvedMime(mimeType: string, filename?: string): string {
   const mime = mimeType.toLowerCase();
+  if (mime !== '' && mime !== 'application/octet-stream') return mime;
+  if (filename !== undefined && filename !== '') return guessMimeTypeFromFilename(filename);
+  return mime;
+}
+
+export function familyOf(mimeType: string, filename?: string): FileFamily {
+  const mime = resolvedMime(mimeType, filename);
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('video/')) return 'video';
   if (mime.startsWith('audio/')) return 'audio';
@@ -72,6 +101,6 @@ export function familyOf(mimeType: string): FileFamily {
   return 'other';
 }
 
-export function styleForMime(mimeType: string): FamilyStyle {
-  return STYLES[familyOf(mimeType)];
+export function styleForMime(mimeType: string, filename?: string): FamilyStyle {
+  return STYLES[familyOf(mimeType, filename)];
 }

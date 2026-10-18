@@ -12,7 +12,7 @@ import { REQUIRED_SCOPES, assertFileOwnership, ownerKeyOf, requireScope } from '
 import { contentDisposition } from '../content-disposition.js';
 import { findFileById, findFileByIdForAccessCheck } from '../db/repositories/files.js';
 import { findActiveStorageObjectByFileId } from '../db/repositories/storage-objects.js';
-import { isInlinePreviewable } from '../mime.js';
+import { effectiveMimeTypeForFile, isInlinePreviewable } from '../mime.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
@@ -263,13 +263,14 @@ export const deliveryRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
       }
 
       const read = await provider.openReadStream(object.ref, requested ?? undefined);
-      void reply.header('content-type', file.mimeType);
+      const servedType = effectiveMimeTypeForFile(file.mimeType, file.originalFilename);
+      void reply.header('content-type', servedType);
       void reply.header('content-length', String(read.length));
       void reply.header(
         'content-disposition',
-        contentDisposition(file.originalFilename, file.mimeType),
+        contentDisposition(file.originalFilename, servedType),
       );
-      if (isInlinePreviewable(file.mimeType)) {
+      if (isInlinePreviewable(file.mimeType, file.originalFilename)) {
         // Only now that the response is certain to be bytes: an inline-safe type may be embedded
         // from another origin, everything else keeps the default same-origin policy.
         void reply.header('cross-origin-resource-policy', 'cross-origin');

@@ -40,7 +40,7 @@ export function FileInspector({
   anonymous: boolean;
 }) {
   const downloadable = isDownloadable(file);
-  const style = styleForMime(file.mimeType);
+  const style = styleForMime(file.mimeType, file.filename);
 
   return (
     <aside className="inspector" aria-label={`Details for ${file.filename}`}>

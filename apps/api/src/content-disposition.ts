@@ -14,6 +14,6 @@ import { isInlinePreviewable } from './mime.js';
  */
 export function contentDisposition(filename: string, mimeType: string): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-  const disposition = isInlinePreviewable(mimeType) ? 'inline' : 'attachment';
+  const disposition = isInlinePreviewable(mimeType, filename) ? 'inline' : 'attachment';
   return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
