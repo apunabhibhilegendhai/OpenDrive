@@ -1,6 +1,6 @@
 import { API_PREFIX, meResponseSchema, problemDetailsResponseSchema } from '@opendrive/shared';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
-import { requireIdentity } from '../authz.js';
+import { ownerKeyOf, requireIdentity } from '../authz.js';
 import { toAuthContext } from '../auth/payload.js';
 import { toQuotaSummary } from '../db/mappers.js';
 import { quotaArgsFor, readQuotaSummary } from '../db/repositories/quota.js';
@@ -37,12 +37,23 @@ export const identityRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
       const identity = requireIdentity(requestIdentity(request));
       const sql = services.db.requireSql();
 
-      const outcome = await readQuotaSummary(sql, quotaArgsFor(identity.principal));
-      if (!outcome.ok) throw quotaRefusalProblem(outcome.reason);
+      // Identity is per-credential — two API keys on one account carry different scopes — so only
+      // the quota is cached, under the principal the credential resolves to. The generation that
+      // keys this entry is advanced by every upload, delete and folder write, so a change to the
+      // numbers a person just made is reflected on their very next read.
+      const quota = await services.userCache.readThrough({
+        principalKey: ownerKeyOf(identity),
+        tag: 'quota',
+        load: async () => {
+          const outcome = await readQuotaSummary(sql, quotaArgsFor(identity.principal));
+          if (!outcome.ok) throw quotaRefusalProblem(outcome.reason);
+          return toQuotaSummary(outcome.summary);
+        },
+      });
 
       return {
         identity: toAuthContext(identity),
-        quota: toQuotaSummary(outcome.summary),
+        quota,
       };
     },
   );

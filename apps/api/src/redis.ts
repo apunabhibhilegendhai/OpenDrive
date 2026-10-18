@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import type { CacheClient } from './cache/user-cache.js';
 
 /**
  * The optional Redis connection.
@@ -47,5 +48,21 @@ export function createRedisConnection(url: string | null): RedisConnection | nul
         client.disconnect();
       }
     },
+  };
+}
+
+/**
+ * Adapts the shared ioredis client to the narrow {@link CacheClient} the per-user cache needs.
+ *
+ * The cache is allowed exactly four commands, and this adapter is the only place they are named.
+ * `SET key value EX seconds` is the sole write: every entry carries its own expiry, so a key can
+ * never outlive the reason it was written — not even if an explicit invalidation is missed.
+ */
+export function redisCacheClient(client: Redis): CacheClient {
+  return {
+    get: (key) => client.get(key),
+    set: (key, value, mode, ttlSeconds) => client.set(key, value, mode, ttlSeconds),
+    incr: (key) => client.incr(key),
+    del: (...keys) => client.del(...keys),
   };
 }

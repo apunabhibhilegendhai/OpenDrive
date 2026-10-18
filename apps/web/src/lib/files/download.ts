@@ -1,6 +1,6 @@
 import type { ByteRange } from '@opendrive/shared';
 import type { ApiClient } from '../api/client.js';
-import { NetworkError, isTransientFailure } from '../api/errors.js';
+import { NetworkError, isApiError, isTransientFailure } from '../api/errors.js';
 
 /**
  * Save a file's bytes.
@@ -79,10 +79,29 @@ export interface DownloadOptions {
   windowBudgetMs?: number;
   /** Override the retry backoff base. Only tests need this; production uses the constant. */
   retryBaseDelayMs?: number;
+  /**
+   * Fetch through the cacheable `/cdn` delivery surface instead of the owner content route.
+   *
+   * Every window of a delivery download is served from a URL that is `public, immutable` and bound
+   * to the object version, so a proxy or the browser may hold the bytes across windows and across
+   * downloads. When the deployment cannot mint one (no signing secret) this silently falls back to
+   * the authenticated route, so a working deployment is never made worse by asking for the CDN.
+   */
+  preferDelivery?: boolean;
 }
 
 /** The file shape a download needs. `sizeBytes` may be unknown; then a single request is used. */
 export type DownloadTarget = { id: string; filename: string; sizeBytes?: number };
+
+/**
+ * A fetch of one window (or the whole object when no range is given), already bound to whichever
+ * surface was chosen. Keeping this as a function rather than a client + file id is what lets the
+ * same windowing, budgeting and retry logic run over either the owner route or a delivery URL.
+ */
+type ByteFetcher = (
+  range: ByteRange | undefined,
+  signal: AbortSignal | undefined,
+) => Promise<Response>;
 
 /** A read that produced a chunk, a read that finished, or a read the time budget ran out on. */
 type ReadOutcome = { done: boolean; value?: Uint8Array<ArrayBuffer> } | 'budget';
@@ -228,8 +247,7 @@ interface WindowResult {
  * whole-object answer would corrupt the file, so it is refused rather than appended.
  */
 async function copyWindow(
-  client: ApiClient,
-  fileId: string,
+  fetchBytes: ByteFetcher,
   range: ByteRange,
   writer: WritableStreamDefaultWriter<Uint8Array<ArrayBuffer>>,
   budgetMs: number,
@@ -247,7 +265,7 @@ async function copyWindow(
     const onOuterAbort = (): void => controller.abort();
     signal?.addEventListener('abort', onOuterAbort, { once: true });
     try {
-      const response = await client.openContent(fileId, { range, signal: controller.signal });
+      const response = await fetchBytes(range, controller.signal);
       if (response.status !== 206) {
         if (range.start !== 0) {
           throw new NetworkError(
@@ -280,7 +298,7 @@ async function copyWindow(
 
 /** Copies the object to a writable sink window by window, advancing by the bytes actually written. */
 async function copyInWindows(
-  client: ApiClient,
+  fetchBytes: ByteFetcher,
   file: DownloadTarget,
   writer: WritableStreamDefaultWriter<Uint8Array<ArrayBuffer>>,
   windowBytes: number,
@@ -290,7 +308,7 @@ async function copyInWindows(
 ): Promise<void> {
   const total = file.sizeBytes;
   if (total === undefined || total <= 0) {
-    const response = await client.openContent(file.id, signal ? { signal } : {});
+    const response = await fetchBytes(undefined, signal);
     await pipeWholeBody(response, writer, signal);
     return;
   }
@@ -298,8 +316,7 @@ async function copyInWindows(
   let offset = 0;
   while (offset < total) {
     const result = await copyWindow(
-      client,
-      file.id,
+      fetchBytes,
       windowAt(offset, total, windowBytes),
       writer,
       budgetMs,
@@ -313,7 +330,7 @@ async function copyInWindows(
 
 /** Streams the object to disk window by window, closing the writable when it is complete. */
 async function writeInWindows(
-  client: ApiClient,
+  fetchBytes: ByteFetcher,
   file: DownloadTarget,
   writable: WritableStream<Uint8Array<ArrayBuffer>>,
   windowBytes: number,
@@ -323,7 +340,7 @@ async function writeInWindows(
 ): Promise<void> {
   const writer = writable.getWriter();
   try {
-    await copyInWindows(client, file, writer, windowBytes, budgetMs, retryBaseDelayMs, signal);
+    await copyInWindows(fetchBytes, file, writer, windowBytes, budgetMs, retryBaseDelayMs, signal);
     await writer.close();
   } finally {
     writer.releaseLock();
@@ -332,7 +349,7 @@ async function writeInWindows(
 
 /** Fetches the object window by window and returns the pieces to assemble into one Blob. */
 async function fetchInWindows(
-  client: ApiClient,
+  fetchBytes: ByteFetcher,
   file: DownloadTarget,
   windowBytes: number,
   budgetMs: number,
@@ -347,12 +364,77 @@ async function fetchInWindows(
   });
   const writer = writable.getWriter();
   try {
-    await copyInWindows(client, file, writer, windowBytes, budgetMs, retryBaseDelayMs, signal);
+    await copyInWindows(fetchBytes, file, writer, windowBytes, budgetMs, retryBaseDelayMs, signal);
     await writer.close();
   } finally {
     writer.releaseLock();
   }
   return chunks;
+}
+
+/** The authenticated owner-content route, always available to a signed-in caller. */
+function ownerFetcher(client: ApiClient, fileId: string): ByteFetcher {
+  return (range, signal) =>
+    client.openContent(fileId, {
+      ...(range === undefined ? {} : { range }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+}
+
+/**
+ * The cacheable delivery surface, or null when it is not available.
+ *
+ * The link is minted once and reused for every window: a fresh token per window would give each
+ * request a different URL and make every one a cache miss, which is the opposite of the point. A
+ * link that expires mid-download (a very large or very slow object) fails `401`/`404`; that is not
+ * fatal — it is re-minted once and the same window is retried under the new URL.
+ */
+async function deliveryFetcher(client: ApiClient, fileId: string): Promise<ByteFetcher | null> {
+  let url: string;
+  try {
+    url = (await client.createDeliveryUrl(fileId)).url;
+  } catch {
+    // No signing secret (503), an unknown deployment, or a session that is already dead: fall back
+    // to the owner route, which either works or fails in exactly the same way.
+    return null;
+  }
+
+  return async (range, signal) => {
+    const request = (target: string): Promise<Response> =>
+      client.openDelivery(target, {
+        ...(range === undefined ? {} : { range }),
+        ...(signal === undefined ? {} : { signal }),
+      });
+    try {
+      return await request(url);
+    } catch (error) {
+      if (
+        !isApiError(error) ||
+        (error.status !== 401 && error.status !== 403 && error.status !== 404)
+      ) {
+        throw error;
+      }
+      try {
+        url = (await client.createDeliveryUrl(fileId)).url;
+      } catch {
+        throw error;
+      }
+      return request(url);
+    }
+  };
+}
+
+/** Chooses the delivery surface when asked and available, else the authenticated owner route. */
+async function byteFetcher(
+  client: ApiClient,
+  fileId: string,
+  preferDelivery: boolean,
+): Promise<ByteFetcher> {
+  if (preferDelivery) {
+    const delivery = await deliveryFetcher(client, fileId);
+    if (delivery !== null) return delivery;
+  }
+  return ownerFetcher(client, fileId);
 }
 
 export async function downloadFileContent(
@@ -364,6 +446,7 @@ export async function downloadFileContent(
   const windowBytes = options.windowBytes ?? DOWNLOAD_WINDOW_BYTES;
   const budgetMs = options.windowBudgetMs ?? DOWNLOAD_WINDOW_BUDGET_MS;
   const retryBaseDelayMs = options.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
+  const preferDelivery = options.preferDelivery ?? false;
   const picker = saveFilePicker();
 
   if (picker !== undefined) {
@@ -373,9 +456,20 @@ export async function downloadFileContent(
       throw error;
     });
     if (handle === null) return { kind: 'cancelled' };
+    // Choose the surface *after* the picker: `showSaveFilePicker` needs the click's user
+    // activation, which an awaited network round trip would spend before the picker ever opens.
+    const fetchBytes = await byteFetcher(client, file.id, preferDelivery);
     const writable = await handle.createWritable();
     try {
-      await writeInWindows(client, file, writable, windowBytes, budgetMs, retryBaseDelayMs, signal);
+      await writeInWindows(
+        fetchBytes,
+        file,
+        writable,
+        windowBytes,
+        budgetMs,
+        retryBaseDelayMs,
+        signal,
+      );
     } catch (error) {
       await writable.abort().catch(() => undefined);
       throw error;
@@ -383,8 +477,9 @@ export async function downloadFileContent(
     return { kind: 'saved', filename: handle.name ?? file.filename, streamed: true };
   }
 
+  const fetchBytes = await byteFetcher(client, file.id, preferDelivery);
   const blob = new Blob(
-    await fetchInWindows(client, file, windowBytes, budgetMs, retryBaseDelayMs, signal),
+    await fetchInWindows(fetchBytes, file, windowBytes, budgetMs, retryBaseDelayMs, signal),
   );
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');

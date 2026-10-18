@@ -283,6 +283,10 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       };
       services.uploadSessions.create(record);
 
+      // The new row is already listed (a file is visible from the moment it starts uploading), so
+      // the principal's cached listings are dropped before the caller can list again.
+      await services.userCache.invalidateReads(ownerKey);
+
       return reply.status(201).send({
         uploadId,
         fileId,
@@ -515,6 +519,10 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         if (finalized === null) throw inconsistentUploadState();
 
         services.uploadSessions.finish(uploadId, 'finalized');
+
+        // The row just became servable; drop the principal's cached listings so a poll followed by
+        // a list shows the finished file rather than the "uploading" row it replaced.
+        await services.userCache.invalidateReads(ownerKey);
       });
 
       // Large objects outlast an edge proxy's request timeout, so hand back `202` and let the
@@ -583,6 +591,9 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         });
         services.uploadSessions.finish(view.record.uploadId, 'aborted');
       }
+
+      // An abort moves the file to `failed`; the listing that showed it "uploading" must not linger.
+      await services.userCache.invalidateReads(ownerKey);
 
       return reply.status(204).send(null);
     },

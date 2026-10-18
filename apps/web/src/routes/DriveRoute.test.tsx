@@ -25,7 +25,7 @@ const NOW = '2026-10-12T12:00:00.000Z';
 const PART_PATH = /^\/api\/v1\/uploads\/upl_[0-9a-z]+\/parts\/\d+$/;
 const COMPLETE_PATH = /^\/api\/v1\/uploads\/upl_[0-9a-z]+\/complete$/;
 const CONTENT_PATH = /^\/api\/v1\/files\/file_[0-9a-z]+\/content$/;
-const PREVIEW_PATH = /^\/api\/v1\/files\/file_[0-9a-z]+\/preview$/;
+const DELIVERY_PATH = /^\/api\/v1\/files\/file_[0-9a-z]+\/delivery-url$/;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -436,16 +436,17 @@ describe('deleting', () => {
 });
 
 describe('preview', () => {
-  it('shows an image through a signed preview link the API minted', async () => {
+  it('shows an image through a signed delivery URL the API minted', async () => {
     const routes: FakeRoute[] = [
       ...defaultRoutes({ files: [fileFixture({ filename: 'chart.png' })] }),
       {
         method: 'POST',
-        path: PREVIEW_PATH,
+        path: DELIVERY_PATH,
         respond: () => ({
           status: 200,
           body: {
-            path: '/api/v1/files/file_00000000000000000000000001/content?preview=abc.def',
+            path: '/cdn/file_00000000000000000000000001/sobj_00000000000000000000000001?token=abc.def',
+            url: 'http://localhost/cdn/file_00000000000000000000000001/sobj_00000000000000000000000001?token=abc.def',
             expiresAt: '2026-10-12T13:00:00.000Z',
           },
         }),
@@ -458,7 +459,7 @@ describe('preview', () => {
 
     const image = await screen.findByRole('img', { name: 'chart.png' });
     expect(image.getAttribute('src')).toBe(
-      '/api/v1/files/file_00000000000000000000000001/content?preview=abc.def',
+      '/cdn/file_00000000000000000000000001/sobj_00000000000000000000000001?token=abc.def',
     );
     expect(await screen.findByRole('link', { name: /open in a new tab/i })).toBeTruthy();
   });
@@ -498,14 +499,14 @@ describe('preview', () => {
     expect(server.calls.some((call) => call.path.endsWith('/preview'))).toBe(false);
   });
 
-  it('reports a refused preview instead of showing a broken element', async () => {
+  it('reports a refused delivery instead of showing a broken element', async () => {
     const routes: FakeRoute[] = [
       ...defaultRoutes({
         files: [fileFixture({ filename: 'vector.svg', mimeType: 'image/svg+xml' })],
       }),
       {
         method: 'POST',
-        path: PREVIEW_PATH,
+        path: DELIVERY_PATH,
         respond: () =>
           problem(
             409,

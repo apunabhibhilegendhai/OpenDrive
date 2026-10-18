@@ -5,8 +5,10 @@ import { createDatabaseClient } from './db/client.js';
 import type { DatabaseClient, DatabaseClientOptions } from './db/client.js';
 import { createIpHasher } from './auth/ip-hash.js';
 import type { IpHasher } from './auth/ip-hash.js';
-import { createRedisConnection } from './redis.js';
+import { createRedisConnection, redisCacheClient } from './redis.js';
 import type { RedisConnection } from './redis.js';
+import { createUserCache } from './cache/user-cache.js';
+import type { UserCache } from './cache/user-cache.js';
 import { resolveStorageProvider, applyEdgeCache } from './storage/registry.js';
 import type { StorageResolution } from './storage/registry.js';
 import { FinalizeJobStore } from './storage/finalize-jobs.js';
@@ -34,6 +36,12 @@ export interface AppServices {
   readonly storage: StorageResolution;
   /** Shared rate-limit store, or null when `REDIS_URL` is unset (limits stay in-process). */
   readonly redis: RedisConnection | null;
+  /**
+   * The per-principal Redis cache over derived reads (listings, quota) and immutable entries
+   * (delivery grants). Always present; inert unless Redis is configured and the deployment enables
+   * it, in which case it degrades to a pass-through on every failure. See `cache/user-cache.ts`.
+   */
+  readonly userCache: UserCache;
   /** Open upload sessions. Process-local by design; see docs/DECISIONS.md (D31, D33). */
   readonly uploadSessions: UploadSessionStore;
   /**
@@ -70,6 +78,8 @@ export interface CreateServicesOptions {
   readonly database?: DatabaseClientOptions;
   /** Injected by tests; defaults to a connection built from `REDIS_URL`. */
   readonly redis?: RedisConnection | null;
+  /** Injected by tests; defaults to a cache over the resolved Redis connection. */
+  readonly userCache?: UserCache;
   /** Injected by tests that need to exercise expiry without waiting for it. */
   readonly uploadSessions?: UploadSessionStore;
   /** Injected by tests that need to observe a finalize job. */
@@ -92,13 +102,23 @@ export function createServices(
       ? applyEdgeCache(resolveStorageProvider(config), config)
       : { resolution: options.storage, cache: null };
 
+  const redis =
+    options.redis !== undefined ? options.redis : createRedisConnection(config.redisUrl);
+
   return {
     config,
     db: createDatabaseClient(config, options.database ?? {}),
     verifier: options.verifier ?? createAccessTokenVerifier(config.auth),
     hashIp: options.hashIp ?? createIpHasher(config.ipHashSecret),
     storage: storage.resolution,
-    redis: options.redis !== undefined ? options.redis : createRedisConnection(config.redisUrl),
+    redis,
+    userCache:
+      options.userCache ??
+      createUserCache({
+        client: redis === null ? null : redisCacheClient(redis.client),
+        enabled: config.userCache.enabled,
+        ttlSeconds: config.userCache.ttlSeconds,
+      }),
     uploadSessions:
       options.uploadSessions ??
       new UploadSessionStore({

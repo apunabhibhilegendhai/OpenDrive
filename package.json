@@ -26,6 +26,7 @@
     "dev": "pnpm -r --parallel dev",
     "dev:api": "pnpm --filter @opendrive/api dev",
     "dev:web": "pnpm --filter @opendrive/web dev",
+    "load": "cd apps/api && node --import tsx load/run.ts",
     "clean": "pnpm -r clean",
     "verify": "pnpm build:libs && pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:e2e"
   },

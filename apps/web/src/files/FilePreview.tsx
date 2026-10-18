@@ -10,13 +10,16 @@ import { familyOf } from '../lib/files/kind.js';
  *
  * The API serves an inline body only for a raster image, audio or video (see the server's
  * `isInlinePreviewable` allow-list; `image/svg+xml` is deliberately excluded because it is also a
- * scriptable document). For those, this asks the API for a short-lived grant and points the native
- * `<img>`/`<video>`/`<audio>` element at the signed URL: the element streams and seeks through the
- * file directly, so a multi-gigabyte video is never buffered in memory here. Text and code are read
- * through the authenticated client and shown as text, capped so a huge log cannot freeze the tab.
+ * scriptable document, and the delivery route answers it as an attachment). For those, this asks
+ * the API for a short-lived **delivery** URL and points the native `<img>`/`<video>`/`<audio>`
+ * element at it: the element streams and seeks through the file directly, so a multi-gigabyte video
+ * is never buffered in memory here. A delivery URL is the cacheable surface — `public, immutable`,
+ * keyed to the object version — so the browser and any proxy in front of the API can hold the bytes
+ * and re-serve them, and a repeat seek does not touch storage again. Text and code are read through
+ * the authenticated client and shown as text, capped so a huge log cannot freeze the tab.
  * Everything else states plainly that there is no inline preview rather than pretending.
  *
- * The server is the authority on what is previewable: a `409` (the type is not rendered inline) or
+ * The server is the authority on what is previewable: a `409` (the file has no servable content) or
  * a `503` (no signing secret configured) both land in the same honest "not available" state.
  */
 
@@ -41,7 +44,7 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
       try {
         const family = familyOf(file.mimeType);
         if (family === 'image' || family === 'video' || family === 'audio') {
-          const grant = await api.createPreview(file.id, controller.signal);
+          const grant = await api.createDeliveryUrl(file.id, controller.signal);
           if (!cancelled) setState({ status: family, url: grant.url });
           return;
         }

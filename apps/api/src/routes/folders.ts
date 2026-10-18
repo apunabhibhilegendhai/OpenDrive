@@ -79,15 +79,24 @@ export const folderRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesRead);
       const { limit, cursor, parent } = request.query;
       const scope = parent === undefined ? 'any' : parent === 'root' ? 'root' : 'folder';
+      const ownerKey = ownerKeyOf(identity);
 
-      const page = await listFolders(services.db.requireSql(), ownerKeyOf(identity), {
-        scope,
-        ...(scope === 'folder' && typeof parent === 'string' ? { folderId: parent } : {}),
-        limit,
-        before: cursor === undefined ? undefined : decodeCursor(cursor),
+      // Cached like the file listing: per principal and per query. A folder create, rename, move or
+      // delete advances the generation, so a tree edit is visible immediately.
+      return services.userCache.readThrough({
+        principalKey: ownerKey,
+        tag: 'folders',
+        parts: [scope, typeof parent === 'string' ? parent : '', limit, cursor ?? ''],
+        load: async () => {
+          const page = await listFolders(services.db.requireSql(), ownerKey, {
+            scope,
+            ...(scope === 'folder' && typeof parent === 'string' ? { folderId: parent } : {}),
+            limit,
+            before: cursor === undefined ? undefined : decodeCursor(cursor),
+          });
+          return { items: page.items.map(toFolderRecord), nextCursor: page.nextCursor };
+        },
       });
-
-      return { items: page.items.map(toFolderRecord), nextCursor: page.nextCursor };
     },
   );
 
@@ -136,6 +145,8 @@ export const folderRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         parentId,
         name,
       });
+
+      await services.userCache.invalidateReads(ownerKey);
 
       reply.code(201);
       return toFolderRecord(folder);
@@ -191,7 +202,9 @@ export const folderRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       }
 
       const updated = await findFolderById(sql, folderId, ownerKey);
-      return toFolderRecord(assertFolderOwnership(identity, updated));
+      const record = toFolderRecord(assertFolderOwnership(identity, updated));
+      await services.userCache.invalidateReads(ownerKey);
+      return record;
     },
   );
 
@@ -218,9 +231,10 @@ export const folderRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
     },
     async (request, reply) => {
       const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesWrite);
+      const ownerKey = ownerKeyOf(identity);
       const outcome = await softDeleteFolder(services.db.requireSql(), {
         folderId: request.params.folderId,
-        ownerKey: ownerKeyOf(identity),
+        ownerKey,
       });
 
       if (outcome === 'not_found') {
@@ -231,6 +245,8 @@ export const folderRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
           detail: 'This folder still contains folders or files. Empty it first.',
         });
       }
+
+      await services.userCache.invalidateReads(ownerKey);
 
       reply.code(204);
       return null;

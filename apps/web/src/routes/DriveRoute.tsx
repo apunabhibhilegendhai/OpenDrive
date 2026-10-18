@@ -131,7 +131,7 @@ export function DriveRoute() {
     async (file: FileRecord) => {
       setDownloadsBusy(true);
       try {
-        const outcome = await downloadFileContent(api, file);
+        const outcome = await downloadFileContent(api, file, undefined, { preferDelivery: true });
         if (outcome.kind === 'cancelled') return;
         notify(
           outcome.streamed

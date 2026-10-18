@@ -69,6 +69,15 @@ const environmentSchema = z.object({
   SUPABASE_ANON_KEY: optionalString,
   SUPABASE_SERVICE_ROLE_KEY: optionalString,
   REDIS_URL: optionalString,
+  //
+  // Per-principal Redis cache. Redis already backs the rate-limit counters; this reuses the same
+  // optional connection to hold a *derived* rendering of what a principal reads (listings, quota)
+  // so a repeat read does not recompute it. It is off unless Redis is configured and the deployment
+  // leaves it on, and it is always safe to lose: a write bumps a per-principal generation, so an
+  // upload or delete is visible on the very next read rather than after the TTL (see user-cache.ts).
+  //
+  USER_CACHE_ENABLED: booleanFromEnv,
+  USER_CACHE_TTL_SECONDS: z.coerce.number().int().positive().max(3600).default(15),
 
   //
   // Metadata database. The API connects directly (the service role's Postgres role or a
@@ -195,6 +204,15 @@ export interface ApiConfig {
   readonly databaseUrl: string | null;
   /** Redis connection string, or null when rate-limit counters stay in-process. */
   readonly redisUrl: string | null;
+  /**
+   * The per-principal Redis cache. `enabled` false (or no Redis) means every read is answered
+   * straight from PostgreSQL; `ttlSeconds` is the default lifetime of one cached read. Every entry
+   * expires, and a write advances a per-principal generation so mutations are visible immediately.
+   */
+  readonly userCache: {
+    readonly enabled: boolean;
+    readonly ttlSeconds: number;
+  };
   /**
    * How the API verifies Supabase access tokens. `configured` is false when neither key source
    * is present; protected routes then fail closed with 503 rather than trusting anything.
@@ -349,6 +367,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     databaseUrl: readValue(env, 'DATABASE_URL'),
     redisUrl: readValue(env, 'REDIS_URL'),
+    userCache: {
+      // On by default, but inert without a Redis connection — the cache is only ever constructed
+      // with a client, so an unconfigured deployment simply never caches.
+      enabled: values.USER_CACHE_ENABLED ?? true,
+      ttlSeconds: values.USER_CACHE_TTL_SECONDS,
+    },
     auth: {
       configured:
         values.SUPABASE_JWKS_URL !== undefined || values.SUPABASE_JWT_SECRET !== undefined,

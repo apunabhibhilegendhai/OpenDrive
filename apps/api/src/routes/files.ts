@@ -93,14 +93,26 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
       const { limit, cursor, folder } = request.query;
 
       const scope = folder === undefined ? 'any' : folder === 'root' ? 'root' : 'folder';
-      const page = await listFiles(services.db.requireSql(), ownerKeyOf(identity), {
-        scope,
-        ...(scope === 'folder' && typeof folder === 'string' ? { folderId: folder } : {}),
-        limit,
-        before: cursor === undefined ? undefined : decodeCursor(cursor),
-      });
+      const ownerKey = ownerKeyOf(identity);
 
-      return { items: page.items.map(toFileRecord), nextCursor: page.nextCursor };
+      // A page is cached per principal and per query (scope, folder, limit, cursor), so scrolling a
+      // long listing does not re-query each page that was already seen. Every write that changes
+      // what this listing would contain advances the principal's generation, which is why a file
+      // that was just uploaded or deleted appears (or disappears) on the next read.
+      return services.userCache.readThrough({
+        principalKey: ownerKey,
+        tag: 'files',
+        parts: [scope, typeof folder === 'string' ? folder : '', limit, cursor ?? ''],
+        load: async () => {
+          const page = await listFiles(services.db.requireSql(), ownerKey, {
+            scope,
+            ...(scope === 'folder' && typeof folder === 'string' ? { folderId: folder } : {}),
+            limit,
+            before: cursor === undefined ? undefined : decodeCursor(cursor),
+          });
+          return { items: page.items.map(toFileRecord), nextCursor: page.nextCursor };
+        },
+      });
     },
   );
 
@@ -376,6 +388,10 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
           });
         }
       }
+
+      // Before answering, drop every cached reading of this principal's files: a listing fetched
+      // right after a delete must not resurrect the row from cache.
+      await services.userCache.invalidateReads(file.ownerKey);
 
       return reply.status(204).send(null);
     },

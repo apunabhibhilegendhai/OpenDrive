@@ -9,6 +9,7 @@ import {
   completeUploadResponseSchema,
   createdApiKeyRecordSchema,
   createdShareRecordSchema,
+  deliveryGrantSchema,
   filePageSchema,
   fileRecordSchema,
   folderPageSchema,
@@ -29,6 +30,7 @@ import type {
   ByteRange,
   CreateFolderRequest,
   CreateShareRequest,
+  DeliveryGrant,
   FileRecord,
   FolderRecord,
   HealthResponse,
@@ -332,6 +334,64 @@ export class ApiClient {
       ...(signal ? { signal } : {}),
     });
     return { url: this.#url(grant.path), expiresAt: grant.expiresAt };
+  }
+
+  /**
+   * Mint a cacheable delivery URL for one file version.
+   *
+   * Where a preview link is private and short, a delivery URL is built to be *cached*: the API
+   * serves it with `Cache-Control: public, immutable`, keyed to the exact object version, so a
+   * browser element — or a proxy in front of the API — may store the bytes and re-serve them. That
+   * is what makes a repeat view of an image or a video seek cheap.
+   *
+   * The URL is composed against this client's own base (`path` is returned relative to the API
+   * origin) rather than trusting the absolute `url` the server built, so a proxied development
+   * setup behaves the same as production. A deployment with no signing secret answers `503`, which
+   * surfaces as an `ApiError` for the caller to fall back on.
+   */
+  async createDeliveryUrl(fileId: string, signal?: AbortSignal): Promise<DeliveryGrant> {
+    const grant = await this.request(
+      `${API_PREFIX}/files/${fileId}/delivery-url`,
+      deliveryGrantSchema,
+      { method: 'POST', ...(signal ? { signal } : {}) },
+    );
+    return { url: this.#url(grant.path), path: grant.path, expiresAt: grant.expiresAt };
+  }
+
+  /**
+   * Fetch bytes from a delivery URL.
+   *
+   * The URL carries its own signed, expiring token, so this request attaches **no** credential —
+   * that is the property that lets a cache hold the response. It is the delivery twin of
+   * {@link ApiClient.openContent}: same range semantics and the same problem-on-failure behaviour,
+   * but no `Authorization` header. A failure to reach the network is a `NetworkError`; a non-`2xx`
+   * answer becomes the API's problem document.
+   */
+  async openDelivery(
+    url: string,
+    options: { signal?: AbortSignal; range?: ByteRange } = {},
+  ): Promise<Response> {
+    const headers: Record<string, string> =
+      options.range === undefined
+        ? {}
+        : { range: `bytes=${options.range.start}-${options.range.endInclusive}` };
+
+    let response: Response;
+    try {
+      response = await this.#fetch(url, {
+        method: 'GET',
+        headers,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      throw new NetworkError(NETWORK_FAILURE_MESSAGE, { cause: error });
+    }
+
+    if (!response.ok) {
+      throw problemFrom(response.status, await readJson(response));
+    }
+    return response;
   }
 
   /** Folders ---------------------------------------------------------------- */

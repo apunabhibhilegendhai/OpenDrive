@@ -72,6 +72,24 @@ function etagMatches(header: string | undefined, etag: string): boolean {
     .some((candidate) => candidate === bare);
 }
 
+/**
+ * How much of a delivery token's life is never cached.
+ *
+ * A cached grant keeps the *same* URL across repeated opens, which is what lets a browser or proxy
+ * reuse the bytes it already holds: a fresh token on every open would make every URL unique and
+ * every cache entry unreachable. The cost is that a cached URL is served until it is within this
+ * margin of expiry, so a caller never receives a link that dies mid-request.
+ */
+const DELIVERY_GRANT_CACHE_SLACK_SECONDS = 60;
+
+/** The cached lifetime of one delivery grant: its token TTL less the safety margin. */
+function deliveryGrantCacheTtl(tokenTtlSeconds: number): number {
+  return Math.max(
+    1,
+    tokenTtlSeconds - Math.min(DELIVERY_GRANT_CACHE_SLACK_SECONDS, tokenTtlSeconds >> 1),
+  );
+}
+
 export const deliveryRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
   app.post(
     `${API_PREFIX}/files/:fileId/delivery-url`,
@@ -109,9 +127,10 @@ export const deliveryRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
       requireStorageProvider(services.storage);
 
       const sql = services.db.requireSql();
+      const ownerKey = ownerKeyOf(identity);
       const file = assertFileOwnership(
         identity,
-        await findFileById(sql, request.params.fileId, ownerKeyOf(identity)),
+        await findFileById(sql, request.params.fileId, ownerKey),
       );
 
       const scanningEnabled = services.config.limits.malwareScanEnabled;
@@ -127,13 +146,32 @@ export const deliveryRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
         throw new AppError('NOT_FOUND', { detail: 'The file has no stored content.' });
       }
 
+      // The token is deterministic for one (file, version, expiry second), so caching the grant is
+      // what keeps the URL stable across opens: the browser (and the edge) then key their caches on
+      // one URL instead of one per page view. Ownership and servability were checked above, so the
+      // cache never becomes an authorization bypass — it only avoids re-signing the same grant.
+      const cached = await services.userCache.getJson<{
+        url: string;
+        path: string;
+        expiresAt: string;
+      }>(ownerKey, 'delivery', [file.id, object.id]);
+      if (cached !== null) return cached;
+
       const grant = signer.mint(file.id, object.id, new Date());
       const path = `/cdn/${file.id}/${object.id}?token=${encodeURIComponent(grant.token)}`;
-      return {
+      const value = {
         url: `${services.config.publicBaseUrl}${path}`,
         path,
         expiresAt: grant.expiresAt.toISOString(),
       };
+      await services.userCache.setJson(
+        ownerKey,
+        'delivery',
+        [file.id, object.id],
+        value,
+        deliveryGrantCacheTtl(services.config.delivery.tokenTtlSeconds),
+      );
+      return value;
     },
   );
 
