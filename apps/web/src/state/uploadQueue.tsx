@@ -20,6 +20,39 @@ import { useApi, useSession } from '../lib/auth/session.js';
 import { sha256HexOfBlob } from '../lib/upload/checksum.js';
 import { planForFile } from '../lib/upload/plan.js';
 
+/** Best-effort MIME guess when the browser reports an empty type, keyed to the file extension. */
+function guessMimeTypeFromFilename(filename: string): string {
+  const extension = filename.toLowerCase().split('.').pop() ?? '';
+  switch (extension) {
+    case 'ts':
+    case 'm2ts':
+    case 'mts':
+    case 'm2t':
+      return 'video/mp2t';
+    case 'mp4':
+    case 'm4v':
+      return 'video/mp4';
+    case 'webm':
+      return 'video/webm';
+    case 'ogv':
+    case 'ogg':
+      return 'video/ogg';
+    case 'mov':
+      return 'video/quicktime';
+    case 'avi':
+      return 'video/x-msvideo';
+    case 'mkv':
+      return 'video/x-matroska';
+    case 'mpg':
+    case 'mpeg':
+      return 'video/mpeg';
+    case '3gp':
+      return 'video/3gpp';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
 /**
  * The upload queue.
  *
@@ -419,7 +452,10 @@ export function UploadQueueProvider({
         id,
         name: file.name,
         sizeBytes: file.size,
-        mimeType: file.type === '' ? 'application/octet-stream' : file.type,
+        mimeType:
+          file.type === ''
+            ? guessMimeTypeFromFilename(file.name)
+            : file.type,
         folderId,
         phase: 'queued',
         uploadedBytes: 0,
