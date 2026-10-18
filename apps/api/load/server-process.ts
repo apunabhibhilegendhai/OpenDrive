@@ -67,9 +67,18 @@ class CountingDiscardProvider extends DiscardStorageProvider {
   }
 }
 
+/**
+ * The part size this level runs at. It must be set in both places it matters: the API's own chunk
+ * size (what `POST /uploads` advertises to the driver) and the provider's part ceiling (what the
+ * provider accepts). The live deployment configures 100 MiB, so a run that means to reproduce it
+ * sets `STORAGE_CHUNK_SIZE_BYTES=104857600` here and `LOAD_TEST_MAX_PART_BYTES` in the driver.
+ */
+const partSizeBytes = envInt('STORAGE_CHUNK_SIZE_BYTES', 8 * 1024 * 1024);
+
 const provider = new CountingDiscardProvider({
   partDelayMs: envInt('LOAD_TEST_PART_DELAY_MS', 0),
   bufferParts: envBool('LOAD_TEST_BUFFER_PARTS', true),
+  maxPartSizeBytes: partSizeBytes,
 });
 
 const config = loadConfig({
@@ -79,6 +88,7 @@ const config = loadConfig({
   RATE_LIMIT_ENABLED: envBool('LOAD_TEST_RATE_LIMIT', false) ? 'true' : 'false',
   MALWARE_SCAN_ENABLED: 'false',
   STORAGE_PROVIDER: 'none',
+  STORAGE_CHUNK_SIZE_BYTES: String(partSizeBytes),
   SUPABASE_JWT_SECRET: TEST_JWT_SECRET,
   SUPABASE_JWT_ISSUER: TEST_ISSUER,
   SUPABASE_JWT_AUDIENCE: TEST_AUDIENCE,

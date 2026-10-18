@@ -1,6 +1,7 @@
 import type { ApiConfig } from './config.js';
-import type { DatabaseClient } from './db/client.js';
+import type { DatabaseClient, Sql } from './db/client.js';
 import { inspectDatabaseRole } from './db/role-safety.js';
+import type { RoleSafetyReport } from './db/role-safety.js';
 import type { RedisConnection } from './redis.js';
 import type { StorageResolution } from './storage/registry.js';
 
@@ -16,6 +17,11 @@ import type { StorageResolution } from './storage/registry.js';
  * (see `db/role-safety.ts`), so the probe reports that as `degraded` with the specific hazard named,
  * and readiness goes non-ready with it. The API keeps working — the database half of the defence is
  * simply no longer there, and an operator needs to know before it matters.
+ *
+ * The two halves are checked on different schedules. The liveness query runs on every poll; the
+ * role inspection is two catalog queries whose answer only changes when a migration or a deployment
+ * changes it, and whose round trips dominate the probe on a tunnelled connection, so one completed
+ * inspection is reused for {@link ROLE_INSPECTION_TTL_MS} and the detail says the state is reused.
  */
 
 export type DependencyName = 'postgres' | 'redis' | 'storage' | 'auth';
@@ -54,6 +60,61 @@ function unconfigured(what: string, missing: readonly string[]): DependencyProbe
 
 /** Kept short: a readiness probe must not become the slowest endpoint in the system. */
 const PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * How long one completed role inspection is reused, in milliseconds.
+ *
+ * The inspection reads the connected role and the public tables with RLS switched off. Both change
+ * only when a migration or a deployment changes them, while the cost is two round trips on every
+ * readiness poll — measured at roughly 1.1 s of a 1.4 s warm `/readyz` through a Cloudflare tunnel,
+ * against 0.3 s for the liveness query the probe genuinely needs each time. Five minutes bounds how
+ * long a role that was widened by a change can go unnoticed, which is short compared with the
+ * review that should accompany such a change in the first place.
+ */
+const ROLE_INSPECTION_TTL_MS = 5 * 60_000;
+
+/**
+ * Last completed inspection, per connection. A WeakMap so a pool that has been replaced is
+ * inspected afresh and a closed pool is not kept alive by its own cached report.
+ */
+const roleInspections = new WeakMap<
+  Sql,
+  { readonly checkedAt: number; readonly report: RoleSafetyReport }
+>();
+
+interface CachedRoleInspection {
+  readonly report: RoleSafetyReport;
+  /** True when this poll reused an earlier inspection rather than reading the catalog itself. */
+  readonly reused: boolean;
+}
+
+/**
+ * The role inspection, reused for the TTL above. A report of `unavailable` means the catalog could
+ * not be read at all — a transient failure, not a fact about the role — so it is never cached and
+ * the next poll retries it, rather than leaving readiness stuck on a blip.
+ */
+async function inspectRoleOnce(sql: Sql): Promise<CachedRoleInspection> {
+  const cached = roleInspections.get(sql);
+  if (cached !== undefined && Date.now() - cached.checkedAt < ROLE_INSPECTION_TTL_MS) {
+    return { report: cached.report, reused: true };
+  }
+
+  const report = await inspectDatabaseRole(sql);
+  if (report.status === 'unavailable') {
+    roleInspections.delete(sql);
+    return { report, reused: false };
+  }
+  roleInspections.set(sql, { checkedAt: Date.now(), report });
+  return { report, reused: false };
+}
+
+function roleDetail(inspection: CachedRoleInspection): string {
+  if (!inspection.reused) return inspection.report.detail;
+  return (
+    `${inspection.report.detail} Role and RLS state is reused from a check taken within the ` +
+    `last ${ROLE_INSPECTION_TTL_MS / 1000} s.`
+  );
+}
 
 async function probeAuth(config: ApiConfig): Promise<DependencyProbeResult> {
   if (!config.auth.configured) {
@@ -116,6 +177,11 @@ async function probePostgres(
   try {
     await sql`select 1`;
   } catch (error) {
+    // The connection is unusable. What was known about the role came from a connection that no
+    // longer exists — after a failover it could even be a different database — so the cached report
+    // is dropped rather than reported as this deployment's own state; the next successful poll reads
+    // the catalog again.
+    roleInspections.delete(sql);
     return {
       status: 'unavailable',
       detail: `The metadata database could not be queried: ${error instanceof Error ? error.message : 'unknown error'}.`,
@@ -123,14 +189,12 @@ async function probePostgres(
   }
   const roundTripMs = Date.now() - started;
 
-  const role = await inspectDatabaseRole(sql);
-  if (role.status === 'ok') {
-    return {
-      status: 'ok',
-      detail: `Queried in ${roundTripMs} ms. ${role.detail}`,
-    };
+  const inspection = await inspectRoleOnce(sql);
+  const detail = `Queried in ${roundTripMs} ms. ${roleDetail(inspection)}`;
+  if (inspection.report.status === 'ok') {
+    return { status: 'ok', detail };
   }
-  return { status: 'degraded', detail: `Queried in ${roundTripMs} ms. ${role.detail}` };
+  return { status: 'degraded', detail };
 }
 
 export function createDependencyProbes(

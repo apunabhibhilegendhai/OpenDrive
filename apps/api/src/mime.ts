@@ -67,7 +67,8 @@ export function effectiveMimeType(declared: string, detected: string | null | un
  * the sanitising it depends on (docs/SECURITY.md §6).
  */
 const INLINE_PREVIEW_TYPES = new Set([
-  // Raster images only — never image/svg+xml.
+  // Raster images only — never image/svg+xml. (Image types are enumerated because not every
+  // image/* type is something a browser can render; audio and video are handled by prefix below.)
   'image/png',
   'image/jpeg',
   'image/jpg',
@@ -78,25 +79,6 @@ const INLINE_PREVIEW_TYPES = new Set([
   'image/bmp',
   'image/x-icon',
   'image/vnd.microsoft.icon',
-  // Audio.
-  'audio/mpeg',
-  'audio/mp4',
-  'audio/aac',
-  'audio/ogg',
-  'audio/opus',
-  'audio/wav',
-  'audio/x-wav',
-  'audio/webm',
-  'audio/flac',
-  // Video.
-  'video/mp4',
-  'video/webm',
-  'video/ogg',
-  'video/quicktime',
-  'video/x-msvideo',
-  'video/x-matroska',
-  'video/mpeg',
-  'video/3gpp',
 ]);
 
 /**
@@ -108,5 +90,9 @@ export function isInlinePreviewable(mimeType: string | null | undefined): boolea
   const normalized = sanitizeMimeType(mimeType);
   if (normalized === null) return false;
   const bare = normalized.split(';', 1)[0]!.trim();
+  // Any audio or video type is safe to serve inline: none of them is an active document the
+  // way image/svg+xml or text/html is, and the browser itself decides whether it can render it.
+  // (Serving inline is a security decision here, not a capability claim.)
+  if (bare.startsWith('audio/') || bare.startsWith('video/')) return true;
   return INLINE_PREVIEW_TYPES.has(bare);
 }

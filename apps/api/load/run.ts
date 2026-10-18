@@ -32,7 +32,14 @@ const TEST_AUDIENCE = 'authenticated';
 const DEFAULT_USER_QUOTA_BYTES = 5_368_709_120;
 /** The API's real per-principal open-session cap; the harness must not quietly exceed it. */
 const MAX_FILES_PER_USER = 3;
-/** The API's configured part size (`STORAGE_CHUNK_SIZE_BYTES` default). */
+/**
+ * Default send-buffer size, matching the API's default part size (`STORAGE_CHUNK_SIZE_BYTES`).
+ *
+ * The buffer must be at least as large as the part the API advertises, and a deployment is free to
+ * configure a larger one (the live configuration uses 100 MiB), so `LOAD_TEST_MAX_PART_BYTES`
+ * overrides it. Running with the deployed chunk size is the difference between measuring the real
+ * per-part memory cost and extrapolating it.
+ */
 const MAX_PART_BYTES = 8 * 1024 * 1024;
 
 interface LevelOptions {
@@ -461,7 +468,8 @@ async function runLevel(options: LevelOptions): Promise<LevelResult> {
 
   // One buffer for every part in the run, wrapped once in a Blob so each request sends a slice
   // rather than a copy. The driver must not become the memory bottleneck it is measuring.
-  const sharedBody = new Blob([new Uint8Array(MAX_PART_BYTES)]);
+  const maxPartBytes = envInt('LOAD_TEST_MAX_PART_BYTES', MAX_PART_BYTES);
+  const sharedBody = new Blob([new Uint8Array(maxPartBytes)]);
   let driverPeakRssMiB = Math.round(process.memoryUsage().rss / 1024 / 1024);
   let aborted: LevelResult['aborted'] = null;
   const stop = (reason: 'rss-cap' | 'timeout'): void => {
@@ -505,7 +513,7 @@ async function runLevel(options: LevelOptions): Promise<LevelResult> {
     try {
       await uploadOneFile(origin, task.token, task, {
         body: sharedBody,
-        maxPartBytes: MAX_PART_BYTES,
+        maxPartBytes,
         options,
         signal: controller.signal,
         deadline,
