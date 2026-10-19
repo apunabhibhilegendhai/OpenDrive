@@ -125,14 +125,23 @@ export class TelegramPayloadTooLargeError extends TelegramApiError {
 
 /** Telegram is throttling this bot; a backoff-and-retry can succeed. */
 export class TelegramRateLimitedError extends TelegramApiError {
-  constructor(description: string, errorCode: number | null, cause?: unknown) {
+  constructor(
+    description: string,
+    errorCode: number | null,
+    readonly retryAfterSeconds?: number,
+    cause?: unknown,
+  ) {
     super(`Telegram is rate limiting the bot: ${description}`, description, errorCode, true, cause);
     this.name = 'TelegramRateLimitedError';
   }
 }
 
 /** Maps a Telegram error description to the most precise failure class. */
-export function classifyApiError(description: string, errorCode: number | null): TelegramApiError {
+export function classifyApiError(
+  description: string,
+  errorCode: number | null,
+  retryAfterSeconds?: number,
+): TelegramApiError {
   const text = description.toLowerCase();
   if (/(not found|does not exist)/.test(text)) {
     return new TelegramNotFoundError(description, errorCode);
@@ -141,7 +150,7 @@ export function classifyApiError(description: string, errorCode: number | null):
     return new TelegramPayloadTooLargeError(description, errorCode);
   }
   if (errorCode === 429 || /too many requests|retry after|flood/.test(text)) {
-    return new TelegramRateLimitedError(description, errorCode);
+    return new TelegramRateLimitedError(description, errorCode, retryAfterSeconds);
   }
   const retryable = errorCode === null || errorCode >= 500 || errorCode === 429;
   return new TelegramApiError(
@@ -157,6 +166,9 @@ interface TelegramEnvelope {
   result?: unknown;
   description?: string;
   error_code?: number;
+  parameters?: {
+    retry_after?: number;
+  };
 }
 
 export interface TelegramHttpTransportOptions {
@@ -223,7 +235,11 @@ export class TelegramHttpTransport implements TelegramTransport {
           : `HTTP ${response.status} without a Telegram error description`;
       const errorCode =
         typeof envelope.error_code === 'number' ? envelope.error_code : response.status;
-      throw classifyApiError(description, errorCode);
+      const retryAfterSeconds =
+        typeof envelope.parameters?.retry_after === 'number'
+          ? envelope.parameters.retry_after
+          : undefined;
+      throw classifyApiError(description, errorCode, retryAfterSeconds);
     }
     return envelope as TelegramEnvelope;
   }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { Player } from 'mpegts.js';
 import type { FileRecord } from '@opendrive/shared';
 import { Icon } from '../components/Icon.js';
 import type { ApiClient } from '../lib/api/client.js';
@@ -84,10 +85,15 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
     };
   }, [api, file]);
 
+  // mpegts.js is only needed for one format, so it stays a lazy chunk and the effect below is the
+  // only thing that pulls it in. `videoUrl` is derived rather than closing over `state` so the
+  // dependency list can name the URL the player actually loads.
+  const videoUrl = state.status === 'video' ? state.url : null;
+
   useEffect(() => {
-    if (state.status !== 'video' || !isMpegTs || videoRef.current === null) return;
+    if (videoUrl === null || !isMpegTs || videoRef.current === null) return;
     const element = videoRef.current;
-    let player: any = null;
+    let player: Player | null = null;
     let cancelled = false;
 
     void (async () => {
@@ -102,10 +108,18 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
           }
           return;
         }
-        player = mpegts.createPlayer(
-          { type: 'mpegts', isLive: false, url: state.url, cors: true },
+        const created = mpegts.createPlayer(
+          { type: 'mpegts', isLive: false, url: videoUrl, cors: true },
           { enableWorker: false },
         );
+        // The chunk can arrive after this effect was already torn down (React re-runs effects in
+        // development): attaching then would leave a player feeding a detached element, so the
+        // late one is discarded instead.
+        if (cancelled) {
+          created.destroy();
+          return;
+        }
+        player = created;
         player.attachMediaElement(element);
         player.load();
       } catch {
@@ -122,7 +136,7 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
       cancelled = true;
       player?.destroy();
     };
-  }, [state.status, state.url, isMpegTs]);
+  }, [videoUrl, isMpegTs]);
 
   return (
     <section className="preview" aria-label={`Preview of ${file.filename}`}>

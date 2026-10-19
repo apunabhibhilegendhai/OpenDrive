@@ -317,9 +317,9 @@ select verify.eq(
 
 select verify.eq(
   'defaults',
-  'a new profile gets a 5 GiB storage quota',
+  'a new profile gets a 5 TiB storage quota',
   (select storage_quota_bytes from profiles where id = '11111111-1111-4111-8111-111111111111'),
-  5368709120::bigint
+  5497558138880::bigint
 );
 
 select verify.eq(

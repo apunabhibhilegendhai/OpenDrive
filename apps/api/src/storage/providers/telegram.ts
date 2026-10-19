@@ -42,6 +42,7 @@ import {
   TelegramApiError,
   TelegramNotFoundError,
   TelegramPayloadTooLargeError,
+  TelegramRateLimitedError,
   type TelegramFileInfo,
   type TelegramTransport,
   type TelegramUploadReceipt,
@@ -275,6 +276,14 @@ function sleep(ms: number): Promise<void> {
 /** True when Telegram reported a failure that a later attempt may survive. */
 function isRetryableTelegramError(error: unknown): boolean {
   return error instanceof TelegramApiError && error.retryable;
+}
+
+function getRetryDelay(error: unknown, attempt: number, baseMs: number): number {
+  if (error instanceof TelegramRateLimitedError && typeof error.retryAfterSeconds === 'number') {
+    const seconds = Math.max(0, error.retryAfterSeconds);
+    return seconds * 1000;
+  }
+  return baseMs * attempt;
 }
 
 /**
@@ -760,7 +769,7 @@ export class TelegramStorageProvider implements StorageProvider {
         if (!isRetryableTelegramError(error)) this.throwUploadFailure(input, error);
         lastError = error;
         if (attempt < this.uploadRetryAttempts) {
-          await sleep(this.uploadRetryDelayMs * attempt);
+          await sleep(getRetryDelay(error, attempt, this.uploadRetryDelayMs));
         }
       }
     }
@@ -1007,7 +1016,7 @@ export class TelegramStorageProvider implements StorageProvider {
         if (!isRetryableTelegramError(error)) this.throwReadFailure(part, error);
         lastError = error;
         if (attempt < this.readRetryAttempts) {
-          await sleep(this.readRetryDelayMs * attempt);
+          await sleep(getRetryDelay(error, attempt, this.readRetryDelayMs));
         }
       }
     }
@@ -1130,7 +1139,7 @@ export class TelegramStorageProvider implements StorageProvider {
         if (!isRetryableTelegramError(error)) throw error;
         lastError = error;
         if (attempt < this.readRetryAttempts) {
-          await sleep(this.readRetryDelayMs * attempt);
+          await sleep(getRetryDelay(error, attempt, this.readRetryDelayMs));
         }
       }
     }
