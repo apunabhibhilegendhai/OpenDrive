@@ -108,7 +108,6 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
         );
         player.attachMediaElement(element);
         player.load();
-        await player.play().catch(() => undefined);
       } catch {
         if (!cancelled) {
           setState({
