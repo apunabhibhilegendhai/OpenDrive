@@ -59,7 +59,7 @@ create type moderation_state as enum ('open', 'triaged', 'actioned', 'rejected')
 create table profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   display_name text check (char_length(display_name) between 1 and 80),
-  storage_quota_bytes bigint not null default 5368709120 check (storage_quota_bytes > 0),
+  storage_quota_bytes bigint not null default 5497558138880 check (storage_quota_bytes > 0),
   max_file_size_bytes bigint not null default 2147483648 check (max_file_size_bytes > 0),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),

@@ -308,7 +308,7 @@ comment on table quota_limits is
 insert into quota_limits
   (principal_kind, storage_bytes, max_file_size_bytes, max_files, upload_bytes_per_day, download_bytes_per_day, file_expires_after_hours)
 values
-  ('user', 5368709120, 2147483648, 100000, null, null, null),
+  ('user', 5497558138880, 2147483648, 100000, null, null, null),
   ('anonymous', 268435456, 2147483648, 200, 1073741824, 2147483648, 168);
 
 -- Aggregated usage, per principal and period. Advisory for reporting, and the source for the

@@ -121,7 +121,7 @@ const environmentSchema = z.object({
     .int()
     .positive()
     .max(Number.MAX_SAFE_INTEGER)
-    .default(5 * 1024 ** 3),
+    .default(5 * 1024 ** 4),
   EDGE_CACHE_TTL_SECONDS: z.coerce.number().int().positive().max(31_536_000).default(604_800),
   //
   // Cacheable delivery URLs. Like previews, a browser element cannot send an Authorization header,

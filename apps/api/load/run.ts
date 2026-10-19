@@ -29,7 +29,7 @@ const TEST_JWT_SECRET = 'load-harness-secret-not-used-anywhere-else';
 const TEST_ISSUER = 'https://load-harness.invalid/auth/v1';
 const TEST_AUDIENCE = 'authenticated';
 /** The schema default for `profiles.storage_quota_bytes`. */
-const DEFAULT_USER_QUOTA_BYTES = 5_368_709_120;
+const DEFAULT_USER_QUOTA_BYTES = 5_497_558_138_880;
 /** The API's real per-principal open-session cap; the harness must not quietly exceed it. */
 const MAX_FILES_PER_USER = 3;
 /**

@@ -157,7 +157,7 @@ describe('loadConfig', () => {
     expect(config.edgeCache).toEqual({
       enabled: true,
       dir: '.edge-cache',
-      maxBytes: 5 * 1024 ** 3,
+      maxBytes: 5 * 1024 ** 4,
       ttlSeconds: 604_800,
     });
     expect(config.delivery.publicMaxAgeSeconds).toBe(31_536_000);

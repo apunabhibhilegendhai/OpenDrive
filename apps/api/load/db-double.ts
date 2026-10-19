@@ -24,7 +24,7 @@ import type { DatabaseClient, Sql } from '../src/db/client.js';
  * suite remains the place where the real database is exercised.
  */
 
-const DEFAULT_STORAGE_QUOTA_BYTES = 5_368_709_120;
+const DEFAULT_STORAGE_QUOTA_BYTES = 5_497_558_138_880;
 const DEFAULT_MAX_FILE_SIZE_BYTES = 2_147_483_648;
 const DEFAULT_MAX_FILES = 100_000;
 
