@@ -452,10 +452,7 @@ export function UploadQueueProvider({
         id,
         name: file.name,
         sizeBytes: file.size,
-        mimeType:
-          file.type === ''
-            ? guessMimeTypeFromFilename(file.name)
-            : file.type,
+        mimeType: file.type === '' ? guessMimeTypeFromFilename(file.name) : file.type,
         folderId,
         phase: 'queued',
         uploadedBytes: 0,

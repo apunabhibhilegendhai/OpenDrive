@@ -122,7 +122,10 @@ export function guessMimeTypeFromFilename(filename: string): string {
 
 /** Resolve the type we actually serve for a file, falling back to the filename when the stored
  *  type is generic. */
-export function effectiveMimeTypeForFile(mimeType: string | null | undefined, filename?: string): string {
+export function effectiveMimeTypeForFile(
+  mimeType: string | null | undefined,
+  filename?: string,
+): string {
   const normalized = sanitizeMimeType(mimeType);
   if (normalized !== null && normalized !== 'application/octet-stream') return normalized;
   if (filename !== undefined && filename !== '') {

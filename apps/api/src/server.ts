@@ -254,6 +254,15 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   app.setErrorHandler((error, request, reply) => {
     const context: ProblemContext = { instance: request.url, requestId: request.id };
 
+    // A byte route (`/cdn`, a file's content, a share's bytes) sets `content-type` to the file's
+    // own type before the storage read can fail, because the provider's stream is lazy: opening it
+    // succeeds and the failure arrives while the bytes are read. Fastify refuses to send an object
+    // under a non-JSON content-type, so without clearing the route's type here the real failure -
+    // a 503 the caller could act on - is replaced by an opaque `FST_ERR_REP_INVALID_PAYLOAD_TYPE`
+    // 500. Dropping both headers is what lets the problem document below be serialized as JSON.
+    void reply.removeHeader('content-type');
+    void reply.removeHeader('content-length');
+
     if (isAppError(error)) {
       // Expected failures: logged as ordinary request outcomes, not as server faults.
       request.log.info({ code: error.code, status: error.status }, 'request failed');
