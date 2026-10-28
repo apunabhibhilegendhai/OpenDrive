@@ -6,7 +6,12 @@ import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
 import { createFile, applyFileTransition } from '../db/repositories/files.js';
 import { insertActiveStorageObject } from '../db/repositories/storage-objects.js';
-import { reserveStorage, commitReservation, releaseReservation, quotaArgsFor } from '../db/repositories/quota.js';
+import {
+  reserveStorage,
+  commitReservation,
+  releaseReservation,
+  quotaArgsFor,
+} from '../db/repositories/quota.js';
 import { newId, assertTransition } from '@opendrive/shared';
 
 export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
@@ -119,7 +124,9 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
           to: 'uploaded',
         });
         const target = services.config.limits.malwareScanEnabled ? 'scanning' : 'ready';
-        assertTransition('uploaded', target, { scanningEnabled: services.config.limits.malwareScanEnabled });
+        assertTransition('uploaded', target, {
+          scanningEnabled: services.config.limits.malwareScanEnabled,
+        });
         await applyFileTransition(sql, { fileId, ownerKey, from: 'uploaded', to: target });
       } catch (error) {
         await releaseReservation(sql, reservationId);
