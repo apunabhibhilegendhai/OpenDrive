@@ -563,6 +563,33 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         await services.userCache.invalidateReads(ownerKey);
       });
 
+      // Kick off a background transcode for videos, so a web-friendly rendition exists.
+      const completedFile = await findFileById(sql, view.record.fileId, ownerKey);
+      if (completedFile?.mimeType.startsWith('video/') === true) {
+        void (async () => {
+          try {
+            const token = process.env.GITHUB_TOKEN;
+            const repo = process.env.GITHUB_REPOSITORY ?? 'apunabhibhilegendhai/OpenDrive';
+            if (token === undefined || token === '') return;
+            const sourceUrl = `${services.config.publicBaseUrl}/api/v1/files/${view.record.fileId}/content`;
+            await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.github+json',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                event_type: 'transcode',
+                client_payload: { fileId: view.record.fileId, sourceUrl, rendition: '720p' },
+              }),
+            });
+          } catch {
+            // best-effort: transcoding is optional
+          }
+        })();
+      }
+
       // Large objects outlast an edge proxy's request timeout, so hand back `202` and let the
       // client poll. Small ones settle in seconds and stay a single round trip.
       if (view.record.declaredSizeBytes > SYNC_FINALIZE_MAX_BYTES) {

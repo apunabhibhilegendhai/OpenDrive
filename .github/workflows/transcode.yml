@@ -17,6 +17,8 @@ on:
         required: false
         type: number
         default: 20
+  repository_dispatch:
+    types: [transcode]
 
 jobs:
   transcode:
@@ -29,9 +31,14 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      - name: Normalize inputs
+        run: |
+          echo "SOURCE_URL=${{ github.event.client_payload.sourceUrl || inputs.source_url }}" >> $GITHUB_ENV
+          echo "RENDITION=${{ github.event.client_payload.rendition || inputs.rendition }}" >> $GITHUB_ENV
+
       - name: Download source
         env:
-          SOURCE_URL: ${{ inputs.source_url }}
+          SOURCE_URL: ${{ env.SOURCE_URL }}
         run: |
           set -euo pipefail
           curl -L --fail --retry 3 --retry-delay 5 -o source.bin "$SOURCE_URL"
@@ -39,7 +46,7 @@ jobs:
 
       - name: Transcode
         env:
-          RENDITION: ${{ inputs.rendition }}
+          RENDITION: ${{ env.RENDITION }}
         run: |
           set -euo pipefail
           case "$RENDITION" in
@@ -58,7 +65,7 @@ jobs:
 
       - name: Enforce size limit
         env:
-          MAX_SIZE_MB: ${{ inputs.max_size_mb }}
+          MAX_SIZE_MB: 20
         run: |
           set -euo pipefail
           size_mb=$(du -m output.mp4 | cut -f1)
@@ -82,14 +89,14 @@ jobs:
             "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
             -F "chat_id=${CHAT_ID}" \
             -F "document=@output.mp4" \
-            -F "caption=Transcoded ${{ inputs.rendition }}" \
+            -F "caption=Transcoded ${{ env.RENDITION }}" \
             -o telegram_response.json
           cat telegram_response.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: transcoded-${{ inputs.rendition }}
+          name: transcoded-${{ env.RENDITION }}
           path: |
             output.mp4
             telegram_response.json
