@@ -184,16 +184,20 @@ export function resolveStorageProvider(
         ...(config.telegram.workDir === null ? {} : { workDir: config.telegram.workDir }),
       });
       const localBotApi = isLocalBotApi(config.telegram.apiBaseUrl);
-      const maxPartSizeBytes = config.telegram.maxPartSizeBytes;
+      // The public Bot API cannot serve a part back above 20 MiB, so a larger part would be
+      // stored but never readable. Clamp to that ceiling unless a `--local` server is in use.
+      const maxPartSizeBytes = localBotApi
+        ? config.telegram.maxPartSizeBytes
+        : Math.min(
+            config.telegram.maxPartSizeBytes ?? PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES,
+            PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES,
+          );
       // The largest object that may ride as ONE document. `--local` raises it to the server's own
       // 2000 MB ceiling; the public Bot API caps retrieval at 20 MiB, so nothing bigger could be
       // read back even if it were accepted.
       const wholeObjectCeiling = localBotApi
         ? LOCAL_BOT_API_MAX_DOCUMENT_BYTES
-        : Math.min(
-            maxPartSizeBytes ?? PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES,
-            PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES,
-          );
+        : (maxPartSizeBytes ?? PUBLIC_BOT_API_MAX_RETRIEVABLE_BYTES);
       const provider = new TelegramStorageProvider({
         transport,
         // Keep the provider's own object ceiling equal to the size the API already advertises, so

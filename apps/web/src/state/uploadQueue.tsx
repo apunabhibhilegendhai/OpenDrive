@@ -19,6 +19,12 @@ import type { ApiClient, CompleteUploadOutcome } from '../lib/api/client.js';
 import { useApi, useSession } from '../lib/auth/session.js';
 import { sha256HexOfBlob } from '../lib/upload/checksum.js';
 import { planForFile } from '../lib/upload/plan.js';
+import {
+  deleteSession,
+  fileFingerprint,
+  loadSession,
+  saveSession,
+} from '../lib/upload/sessionStore.js';
 
 /** Best-effort MIME guess when the browser reports an empty type, keyed to the file extension. */
 function guessMimeTypeFromFilename(filename: string): string {
@@ -91,6 +97,7 @@ export interface UploadQueueValue {
   busy: boolean;
   enqueue: (files: File[], folderId: string | null) => void;
   cancel: (localId: string) => void;
+  retry: (localId: string) => void;
   dismiss: (localId: string) => void;
   clearFinished: () => void;
 }
@@ -148,6 +155,17 @@ const MAX_PART_ROUNDS = 3;
  * without hitting the limit. Cloudflare Tunnel + browser HTTP/2 multiplexing handles this well.
  */
 export const UPLOAD_CONCURRENCY = 6;
+export const MAX_IN_FLIGHT_BYTES = 32 * 1024 * 1024;
+
+export function concurrencyForParts(
+  parts: readonly { sizeBytes: number }[],
+  cap: number = UPLOAD_CONCURRENCY,
+): number {
+  if (parts.length === 0) return Math.max(1, cap);
+  const minSize = Math.min(...parts.map((part) => part.sizeBytes));
+  const byBudget = Math.floor(MAX_IN_FLIGHT_BYTES / Math.max(1, minSize));
+  return Math.max(1, Math.min(cap, byBudget));
+}
 
 /** Attempts for a finalize poll, which is idempotent and therefore always safe to repeat. */
 export const FINALIZE_RETRY_ATTEMPTS = 6;
@@ -245,7 +263,7 @@ export interface UploadPartToSend {
   readonly partNumber: number;
   readonly sizeBytes: number;
   readonly blob: Blob;
-  readonly checksum: string | undefined;
+  readonly checksum?: string | (() => Promise<string | undefined>);
 }
 
 /**
@@ -270,8 +288,9 @@ export async function transferParts(options: {
   concurrency?: number;
   retryBaseDelayMs?: number;
   maxRounds?: number;
+  partsReceived?: readonly number[];
 }): Promise<number> {
-  const concurrency = options.concurrency ?? UPLOAD_CONCURRENCY;
+  const concurrency = options.concurrency ?? concurrencyForParts(options.parts, UPLOAD_CONCURRENCY);
   const retryBaseDelayMs = options.retryBaseDelayMs ?? PART_RETRY_BASE_DELAY_MS;
   const maxRounds = options.maxRounds ?? MAX_PART_ROUNDS;
   const totalBytes = options.parts.reduce((total, part) => total + part.sizeBytes, 0);
@@ -283,19 +302,43 @@ export async function transferParts(options: {
     claimed: false,
   }));
 
-  const receivedParts = new Set<number>();
+  const receivedParts = new Set<number>(options.partsReceived ?? []);
   // Bytes confirmed by the server, and — separately — what each part still in flight has handed to
   // the socket. Several parts are in the air at once, so the reported figure has to be the sum of
   // both; reporting only whichever part spoke last makes it jump backwards.
   const inFlightBytes = new Map<number, number>();
-  let confirmedBytes = 0;
+  let confirmedBytes = options.partsReceived === undefined
+    ? 0
+    : options.parts.reduce(
+        (total, part) => total + (options.partsReceived!.includes(part.partNumber) ? part.sizeBytes : 0),
+        0,
+      );
   const report = (): void => {
     let inFlight = 0;
     for (const sent of inFlightBytes.values()) inFlight += sent;
     options.onProgress?.(Math.min(totalBytes, confirmedBytes + inFlight));
   };
 
+  const hashSemaphore = new Semaphore(1);
+  const checksumCache = new Map<number, string | undefined>();
+  async function resolveChecksum(part: UploadPartToSend): Promise<string | undefined> {
+    if (part.checksum === undefined) return undefined;
+    if (typeof part.checksum !== 'function') return part.checksum;
+    if (checksumCache.has(part.partNumber)) return checksumCache.get(part.partNumber);
+    await hashSemaphore.acquire();
+    try {
+      if (!checksumCache.has(part.partNumber)) {
+        checksumCache.set(part.partNumber, await part.checksum());
+      }
+      return checksumCache.get(part.partNumber);
+    } finally {
+      hashSemaphore.release();
+    }
+  }
+
+
   const semaphore = new Semaphore(concurrency);
+  report();
 
   for (let round = 1; ; round += 1) {
     const missing = parts.filter((part) => !receivedParts.has(part.partNumber));
@@ -324,7 +367,7 @@ export async function transferParts(options: {
               uploadId: options.uploadId,
               partNumber: part.partNumber,
               body: part.blob,
-              ...(part.checksum === undefined ? {} : { checksumSha256: part.checksum }),
+              ...(part.checksum === undefined ? {} : { checksumSha256: await resolveChecksum(part) }),
               signal: options.signal,
               onProgress: (sent) => {
                 // Held per part number, so it adds to the confirmed total instead of replacing it.
@@ -443,7 +486,7 @@ export function UploadQueueProvider({
     [api],
   );
 
-  const enqueue = useCallback((incoming: File[], folderId: string | null) => {
+  const enqueue = useCallback(async (incoming: File[], folderId: string | null) => {
     const additions: UploadItem[] = incoming.map((file) => {
       const id = `up_${nextId.current}`;
       nextId.current += 1;
@@ -464,6 +507,23 @@ export function UploadQueueProvider({
       };
     });
     setItems((current) => [...current, ...additions]);
+     await Promise.all(
+       additions.map(async (item, index) => {
+         const file = incoming[index];
+         if (file === undefined) return;
+         const persisted = await loadSession(fileFingerprint(file));
+         if (persisted === null) return;
+         if (new Date(persisted.expiresAt).getTime() <= Date.now()) {
+           await deleteSession(fileFingerprint(file));
+           return;
+         }
+         patch(item.id, {
+           uploadId: persisted.uploadId,
+           fileId: persisted.fileId,
+           uploadedBytes: 0,
+         });
+       }),
+     );
   }, []);
 
   /** Run one item to a terminal state. */
@@ -472,7 +532,7 @@ export function UploadQueueProvider({
       const controller = new AbortController();
       controllers.current.set(item.id, controller);
       const file = files.current.get(item.id);
-      let uploadId: string | null = null;
+      let uploadId: string | null = item.uploadId;
       try {
         if (limits === null) {
           patch(item.id, { phase: 'failed', error: 'The API limits have not loaded yet.' });
@@ -508,6 +568,18 @@ export function UploadQueueProvider({
           fileId: initiated.fileId,
           phase: 'uploading',
         });
+          void saveSession({
+            fingerprint: fileFingerprint(file),
+            uploadId: initiated.uploadId,
+            fileId: initiated.fileId,
+            partSizeBytes: initiated.chunkSizeBytes,
+            sizeBytes: item.sizeBytes,
+            name: item.name,
+            mimeType: item.mimeType,
+            folderId: item.folderId,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            updatedAt: Date.now(),
+          });
         if (initiated.deletionToken !== undefined) {
           patch(item.id, { deletionToken: initiated.deletionToken });
           rememberDeletionToken(initiated.fileId, initiated.deletionToken);
@@ -557,6 +629,7 @@ export function UploadQueueProvider({
           fileId: completed.file.id,
           uploadedBytes: item.sizeBytes,
         });
+          void deleteSession(fileFingerprint(file));
         files.current.delete(item.id);
         sessions.current.delete(item.id);
         onUploadCompleted?.(completed.file.id);
@@ -626,6 +699,21 @@ export function UploadQueueProvider({
     [api, items, patch],
   );
 
+   const retry = useCallback(
+     (localId: string) => {
+       const item = items.find((candidate) => candidate.id === localId);
+       if (item === undefined || item.phase !== 'failed') return;
+       if (!files.current.has(localId)) {
+         patch(localId, {
+           error: 'The file is no longer available in this tab; pick it again to resume.',
+         });
+         return;
+       }
+       patch(localId, { phase: 'queued', error: null });
+     },
+     [items, patch],
+   );
+
   const dismiss = useCallback((localId: string) => {
     files.current.delete(localId);
     setItems((current) => current.filter((item) => item.id !== localId));
@@ -642,8 +730,8 @@ export function UploadQueueProvider({
   const busy = items.some((item) => item.phase === 'uploading' || item.phase === 'finalizing');
 
   const value = useMemo<UploadQueueValue>(
-    () => ({ items, busy, enqueue, cancel, dismiss, clearFinished }),
-    [items, busy, enqueue, cancel, dismiss, clearFinished],
+    () => ({ items, busy, enqueue, cancel, retry, dismiss, clearFinished }),
+    [items, busy, enqueue, cancel, retry, dismiss, clearFinished],
   );
 
   return <UploadQueueContext.Provider value={value}>{children}</UploadQueueContext.Provider>;

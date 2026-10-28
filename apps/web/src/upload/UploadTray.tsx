@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LogPoseDial } from '../assets/LogPoseDial.js';
 import { Icon } from '../components/Icon.js';
 import { useUploadQueue, type UploadItem } from '../state/uploadQueue.js';
+import { useApi } from '../lib/auth/session.js';
 import { formatBytes } from '../lib/format.js';
 
 /** Real transmitted fraction. Zero when the size is unknown; there is no smoothing here. */
@@ -18,7 +19,28 @@ function progressOf(item: UploadItem): number {
  * deletion token is shown exactly once, where the API issued it, and never again.
  */
 export function UploadTray() {
-  const { items, busy, cancel, dismiss, clearFinished } = useUploadQueue();
+  const api = useApi();
+  const { items, busy, cancel, retry, dismiss, clearFinished } = useUploadQueue();
+  const [serverSessions, setServerSessions] = useState<
+    { uploadId: string; fileId: string; state: string; partsReceived: number[]; expiresAt: string }[]
+  >([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const sessions = await api.listUploads();
+        if (!cancelled) setServerSessions(sessions);
+      } catch {
+        // ignore
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [api]);
   const finishedCount = items.filter(
     (item) => item.phase === 'ready' || item.phase === 'aborted' || item.phase === 'failed',
   ).length;
@@ -51,9 +73,41 @@ export function UploadTray() {
       </header>
       <ul className="tray__list">
         {items.map((item) => (
-          <UploadRow key={item.id} item={item} onCancel={cancel} onDismiss={dismiss} />
+          <UploadRow
+            key={item.id}
+            item={item}
+            onCancel={cancel}
+            onRetry={retry}
+            onDismiss={dismiss}
+          />
         ))}
       </ul>
+      {serverSessions.length > 0 && (
+        <div className="tray__sessions">
+          <h3 className="tray__title">Open server sessions</h3>
+          <ul className="tray__list">
+            {serverSessions.map((session) => (
+              <li key={session.uploadId} className="tray__row">
+                <span className="tray__name mono">{session.uploadId}</span>
+                <span className="tray__meta">
+                  {session.state} — {session.partsReceived.length} parts
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={() =>
+                    void api.abortUpload(session.uploadId).then(() =>
+                      setServerSessions((current) => current.filter((x) => x.uploadId !== session.uploadId)),
+                    )
+                  }
+                >
+                  Cancel
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }
@@ -82,10 +136,12 @@ function phaseCopy(item: UploadItem): string {
 function UploadRow({
   item,
   onCancel,
+  onRetry,
   onDismiss,
 }: {
   item: UploadItem;
   onCancel: (id: string) => void;
+  onRetry: (id: string) => void;
   onDismiss: (id: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -154,6 +210,11 @@ function UploadRow({
         {active && (
           <button type="button" className="btn btn--ghost" onClick={() => onCancel(item.id)}>
             Cancel
+          </button>
+        )}
+        {item.phase === 'failed' && (
+          <button type="button" className="btn btn--ghost" onClick={() => onRetry(item.id)}>
+            Retry
           </button>
         )}
         {!active && (

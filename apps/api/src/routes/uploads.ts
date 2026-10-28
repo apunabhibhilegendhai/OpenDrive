@@ -71,11 +71,12 @@ import type { UploadSessionRecord } from '../storage/upload-sessions.js';
 
 /**
  * Finalize synchronously for objects up to this size. Assembling and sending a staged object to
- * Telegram runs at a few MiB/s, so 64 MiB settles in roughly twenty seconds — comfortably inside an
- * edge proxy's ~100 s request timeout — while a multi-gigabyte object would not. Above it, complete
- * answers `202` and the client polls the same endpoint until it answers `200`.
+ * Telegram runs at roughly 0.5–3 MiB/s depending on the link, so 16 MiB settles in well under a
+ * minute — comfortably inside an edge proxy's 125 s origin timeout — while a larger object would
+ * not. Above it, complete answers `202` and the client polls the same endpoint until it answers
+ * `200`.
  */
-const SYNC_FINALIZE_MAX_BYTES = 64 * 1024 * 1024;
+const SYNC_FINALIZE_MAX_BYTES = 16 * 1024 * 1024;
 
 const uploadParamsSchema = z.object({
   uploadId: z
@@ -385,6 +386,31 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         receivedBytes: result.receivedBytes,
         ...(result.checksumSha256 === null ? {} : { checksumSha256: result.checksumSha256 }),
       };
+    },
+  );
+
+  app.get(
+    `${API_PREFIX}/uploads`,
+    {
+      schema: {
+        tags: ['uploads'],
+        summary: 'List open upload sessions for the caller',
+        response: { 200: z.array(z.object({ uploadId: z.string(), fileId: z.string(), state: z.string(), partsReceived: z.array(z.number()), declaredSizeBytes: z.number(), chunkSizeBytes: z.number(), expiresAt: z.string() })) },
+      },
+    },
+    async (request) => {
+      const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesRead);
+      const ownerKey = ownerKeyOf(identity);
+      const views = services.uploadSessions.list(ownerKey);
+      return views.map((view) => ({
+        uploadId: view.record.uploadId,
+        fileId: view.record.fileId,
+        state: view.state,
+        partsReceived: [...view.partsReceived],
+        declaredSizeBytes: view.record.declaredSizeBytes,
+        chunkSizeBytes: view.record.partSizeBytes,
+        expiresAt: view.record.expiresAt.toISOString(),
+      }));
     },
   );
 

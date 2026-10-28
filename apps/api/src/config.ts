@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { resolveLimits } from '@opendrive/shared';
+import { EDGE_SAFE_MAX_CHUNK_SIZE_BYTES, resolveLimits } from '@opendrive/shared';
 import type { LimitsConfig } from '@opendrive/shared';
 
 /**
@@ -182,6 +182,11 @@ export interface ApiConfig {
   readonly trustProxy: boolean;
   readonly storageProvider: StorageProviderName;
   readonly limits: LimitsConfig;
+  /**
+   * Configuration that was accepted but corrected, in words an operator can act on. Logged once at
+   * startup. Empty for a configuration that needed no correction.
+   */
+  readonly configurationWarnings: readonly string[];
   readonly dependencies: {
     readonly postgres: DependencyConfiguration;
     readonly redis: DependencyConfiguration;
@@ -335,6 +340,24 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     }
   }
 
+  // Part size is the one limit that can make an otherwise valid upload fail at the edge: a body
+  // over 100 MB is refused outright, and a part that takes longer than the proxy's 125-second
+  // origin timeout is answered with 524. Both are transport ceilings, so a configured part above
+  // the edge-safe bound is corrected here (loudly) rather than accepted and then failed per part.
+  // This is a correction, not a startup failure: taking the API down over a size that merely needs
+  // shrinking would be worse than serving with the safe value.
+  const limits = resolveLimits(env);
+  const configurationWarnings: string[] = [];
+  let chunkSizeBytes = limits.chunkSizeBytes;
+  if (chunkSizeBytes > EDGE_SAFE_MAX_CHUNK_SIZE_BYTES) {
+    configurationWarnings.push(
+      `STORAGE_CHUNK_SIZE_BYTES=${chunkSizeBytes} is above the edge-safe ` +
+        `${EDGE_SAFE_MAX_CHUNK_SIZE_BYTES} bytes (an edge proxy refuses bodies over 100 MB and ` +
+        `times an origin out at 125 s); using ${EDGE_SAFE_MAX_CHUNK_SIZE_BYTES} bytes per part.`,
+    );
+    chunkSizeBytes = EDGE_SAFE_MAX_CHUNK_SIZE_BYTES;
+  }
+
   return {
     nodeEnv,
     host: values.API_HOST,
@@ -349,7 +372,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     trustProxy,
     storageProvider: values.STORAGE_PROVIDER,
-    limits: resolveLimits(env),
+    limits: { ...limits, chunkSizeBytes },
+    configurationWarnings,
     dependencies: {
       // The metadata store is reached directly, so DATABASE_URL — not the PostgREST URL — is
       // what makes it configured. SUPABASE_URL alone is not enough to talk to Postgres.

@@ -562,6 +562,15 @@ export class TelegramStorageProvider implements StorageProvider {
     }
 
     const bytes = await this.stageBytes(part.source, part.sizeBytes);
+    // A part checksum the client declared is checked here, before the bytes are sent on to
+    // Telegram: a corrupt part must fail with a precise 422 rather than become a document that
+    // only a whole-object read-back could later discredit. Staged mode checks the same way.
+    if (part.checksumSha256 != null) {
+      const actual = await sha256HexOfBytes(bytes);
+      if (actual !== part.checksumSha256) {
+        throw integrityCheckFailed(`Part ${part.partNumber} failed its checksum check.`);
+      }
+    }
     const receipt = await this.uploadPartBytes({
       partNumber: part.partNumber,
       fileId: upload.input.fileId,
@@ -931,11 +940,18 @@ export class TelegramStorageProvider implements StorageProvider {
       );
     }
 
-    // Integrity before availability: verify the whole-object checksum by reading the staged
-    // parts back through Telegram, streaming through a bounded hasher (never the whole object).
-    const checksum = await this.hashObjectParts(ordered);
+    // Integrity before availability: a declared whole-object checksum is verified by reading the
+    // stored parts back through Telegram, streaming through a bounded hasher (never the whole
+    // object). When the client declared none — the browser never does — there is nothing to
+    // compare against, and re-downloading a multi-gigabyte object at Telegram's read rate would
+    // outlast every timeout while proving nothing that the per-part checks verify could not.
+    // Such an object is committed with a null checksum instead of paying that cost.
     const declaredChecksum = upload.input.checksumSha256 ?? null;
-    if (declaredChecksum !== null && declaredChecksum !== checksum) {
+    if (declaredChecksum === null) {
+      return this.commitUpload(upload, ordered, null);
+    }
+    const checksum = await this.hashObjectParts(ordered);
+    if (declaredChecksum !== checksum) {
       throw integrityCheckFailed('Whole-object checksum mismatch: nothing becomes readable.');
     }
     return this.commitUpload(upload, ordered, checksum);
@@ -1056,7 +1072,7 @@ export class TelegramStorageProvider implements StorageProvider {
   private async commitUpload(
     upload: TelegramUpload,
     parts: readonly StagedPart[],
-    checksum: string,
+    checksum: string | null,
   ): Promise<StoredObject> {
     const storedAt = this.timestamp();
     const locator = encodeLocator({

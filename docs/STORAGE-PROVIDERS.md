@@ -108,9 +108,9 @@ TELEGRAM_BOT_TOKEN=<bot token>
 TELEGRAM_STORAGE_CHAT_ID=<chat id>
 TELEGRAM_API_BASE_URL=http://127.0.0.1:8081
 # The Local Bot API server accepts up to 2000 MB per *file*, but the HTTP transport in front
-# of the API does not: a Cloudflare-proxied hostname rejects any request body above 100 MiB
-# with 413 (measured 2026-10-13). Keep this at the edge ceiling so parts can actually arrive.
-TELEGRAM_MAX_PART_SIZE_BYTES=104857600
+# of the API does not: a Cloudflare-proxied hostname caps a request body at 100 MB and gives
+# the origin 125 s. 32 MiB keeps every part inside both bounds (see the note below).
+TELEGRAM_MAX_PART_SIZE_BYTES=33554432
 ```
 
 With `--local`, `getFile` returns an **absolute on-disk path** instead of an HTTP URL, so the
@@ -146,21 +146,24 @@ termination proxy for any remote access.
 > 2,147,483,648 bytes). An object at or below 2,000,000,000 bytes is spooled and sent as one
 > document (below); a true 2 GiB object still exceeds what a single `--local` send carries and
 > keeps multipart delivery. Do **not** raise `TELEGRAM_MAX_PART_SIZE_BYTES` toward the gigabyte
-> to shrink the part count: every part travels browser→edge, and the edge rejects a body above
-> 100 MiB.
+> to shrink the part count: every part travels browser→edge, and the edge has both a byte cap and
+> a timeout (see the next note).
 
-> **The edge caps a request body at 100 MiB — not the Bot API.** `--local` raises Telegram's
-> per-file ceiling to 2000 MB, but the API is served through a **Cloudflare-proxied** hostname,
-> and Cloudflare rejects any single request whose `Content-Length` exceeds **100 MiB** with
-> `413` before it reaches the origin (measured 2026-10-13: 104857600 bytes passes, 105906176
-> fails). This is a transport ceiling, not a Telegram one, and it applies to _each part_, so
-> neither `TELEGRAM_MAX_PART_SIZE_BYTES` nor `STORAGE_CHUNK_SIZE_BYTES` should exceed
-> `104857600` on a proxied hostname. At 100 MiB a 2 GiB object arrives as 21 parts (verified
-> byte-exact end to end on 2026-10-13: three parts, SHA-256 match on download). A file that large
-> is still stored as **one** Telegram document: when the provider points at the loopback Local
-> Bot API server it spools the received parts and sends the reassembled object as a single
-> `sendDocument` at finalize, so the chat holds one file rather than N (D39). The browser→edge hop
-> remains part-sized; only the server→Telegram hop carries the whole object.
+> **The edge caps the request body at 100 MB and the origin at 125 s — not the Bot API.** `--local`
+> raises Telegram's per-file ceiling to 2000 MB, but the API is served through a **Cloudflare-proxied**
+> hostname. Cloudflare's Free/Pro plans cap a single request body at **100 MB (100,000,000 bytes,
+> not 100 MiB)** and answer a request whose origin takes longer than **125 seconds** to start
+> responding with **524**. A deployment that used `104857600` (100 MiB) per part was both above the
+> byte cap and long enough to time out on an ordinary uplink: a single 100 MiB part measured
+> **524 after ~170 s** against the live hostname on 2026-10-27. The API therefore clamps
+> `STORAGE_CHUNK_SIZE_BYTES` to **32 MiB** (`EDGE_SAFE_MAX_CHUNK_SIZE_BYTES`) and logs a warning
+> when a larger value is configured; keep `TELEGRAM_MAX_PART_SIZE_BYTES` at or below the same
+> value on a proxied hostname. At 32 MiB a 2 GiB object arrives as 64 parts, and at 8 MiB as 256 —
+> both far inside the 10,000-part ceiling. A file that large is still stored as **one** Telegram
+> document: when the provider points at the loopback Local Bot API server it spools the received
+> parts and sends the reassembled object as a single `sendDocument` at finalize, so the chat holds
+> one file rather than N (D39). The browser→edge hop remains part-sized; only the server→Telegram
+> hop carries the whole object.
 
 > **Partly verified.** A bot token and a private channel were supplied, and the provider was
 > driven against the live Bot API on 2026-10-11 (see D27 and D29). The 2000 MB `--local` ceiling

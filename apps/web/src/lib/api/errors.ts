@@ -13,6 +13,12 @@ export class ApiError extends Error {
   readonly detail: string;
   readonly requestId: string | null;
   readonly fieldErrors: { path: string; message: string }[];
+  /**
+   * Server-suggested wait before retrying, in milliseconds, when this failure is a rate limit
+   * (`429`). `null` when the server did not say, or when this is not a rate limit. Mutable so the
+   * XHR path can fill it in after parsing the response headers.
+   */
+  retryAfterMs: number | null;
 
   constructor(input: {
     status: number;
@@ -20,6 +26,7 @@ export class ApiError extends Error {
     detail: string;
     requestId?: string | null;
     fieldErrors?: { path: string; message: string }[];
+    retryAfterMs?: number | null;
   }) {
     super(input.detail);
     this.name = 'ApiError';
@@ -28,7 +35,26 @@ export class ApiError extends Error {
     this.detail = input.detail;
     this.requestId = input.requestId ?? null;
     this.fieldErrors = input.fieldErrors ?? [];
+    this.retryAfterMs = input.retryAfterMs ?? null;
   }
+}
+
+/** Parse a `Retry-After` header value (seconds or an HTTP date) into milliseconds. */
+export function parseRetryAfter(value: string | null, now: number = Date.now()): number | null {
+  if (value === null || value.trim() === '') return null;
+  const trimmed = value.trim();
+  // Delta-seconds form.
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return Math.min(seconds * 1000, 5 * 60 * 1000);
+  }
+  // HTTP-date form.
+  const date = Date.parse(trimmed);
+  if (Number.isNaN(date)) return null;
+  const delta = date - now;
+  if (delta <= 0) return 0;
+  return Math.min(delta, 5 * 60 * 1000);
 }
 
 /**

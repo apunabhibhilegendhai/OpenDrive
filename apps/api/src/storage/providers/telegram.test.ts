@@ -195,7 +195,7 @@ class FakeTelegramTransport implements TelegramTransport {
   }
 }
 
-function uploadInput(sizeBytes: number, chunkSizeBytes = 1024) {
+function uploadInput(sizeBytes: number, chunkSizeBytes = 1024, checksumSha256?: string) {
   return {
     uploadId: newId('upload'),
     fileId: newId('file'),
@@ -203,6 +203,7 @@ function uploadInput(sizeBytes: number, chunkSizeBytes = 1024) {
     sizeBytes,
     mimeType: 'application/octet-stream',
     chunkSizeBytes,
+    ...(checksumSha256 === undefined ? {} : { checksumSha256 }),
   };
 }
 
@@ -230,7 +231,7 @@ describe('Telegram storage provider', () => {
     for (let index = 0; index < payload.byteLength; index += 1) payload[index] = (index * 3) % 256;
     const expected = await sha256HexOfBytes(payload);
 
-    const session = await first.initiateUpload(uploadInput(payload.byteLength));
+    const session = await first.initiateUpload(uploadInput(payload.byteLength, 1024, expected));
     for (let partNumber = 1; partNumber <= 4; partNumber += 1) {
       await first.uploadPart(session, {
         partNumber,
@@ -365,7 +366,7 @@ describe('Telegram storage provider', () => {
     for (let index = 0; index < payload.byteLength; index += 1) payload[index] = index % 251;
     const expected = await sha256HexOfBytes(payload);
 
-    const session = await provider.initiateUpload(uploadInput(payload.byteLength, 8192));
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, 8192, expected));
     for (let partNumber = 1; partNumber <= 2; partNumber += 1) {
       await provider.uploadPart(session, {
         partNumber,
@@ -441,7 +442,9 @@ describe('Telegram storage provider', () => {
     transport.alwaysFailDownloads = true;
     transport.failureAfterChunks = 0;
     const provider = new TelegramStorageProvider({ transport, readRetryDelayMs: 0 });
-    const session = await provider.initiateUpload(uploadInput(2048));
+    const session = await provider.initiateUpload(
+      uploadInput(2048, 1024, await sha256HexOfBytes(new Uint8Array(2048).fill(3))),
+    );
     const part = new Uint8Array(1024).fill(3);
     await provider.uploadPart(session, { partNumber: 1, source: part, sizeBytes: 1024 });
     await provider.uploadPart(session, { partNumber: 2, source: part, sizeBytes: 1024 });
@@ -471,14 +474,17 @@ describe('Telegram storage provider', () => {
     await expect(drain(read.stream)).rejects.toMatchObject({ code: 'STORAGE_UNAVAILABLE' });
   });
 
-  it('verifies parts through a bounded concurrent window', async () => {
+  it('verifies parts through a bounded concurrent window when a whole-object checksum is declared', async () => {
     const transport = new FakeTelegramTransport();
     const provider = new TelegramStorageProvider({ transport, maxVerifyConcurrency: 3 });
     const partSize = 4096;
     const partCount = 8;
     const payload = new Uint8Array(partSize * partCount);
     for (let index = 0; index < payload.byteLength; index += 1) payload[index] = (index * 7) % 256;
-    const session = await provider.initiateUpload(uploadInput(payload.byteLength, partSize));
+    const expected = await sha256HexOfBytes(payload);
+    const session = await provider.initiateUpload(
+      uploadInput(payload.byteLength, partSize, expected),
+    );
     for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
       await provider.uploadPart(session, {
         partNumber,
@@ -524,7 +530,8 @@ describe('Telegram storage provider', () => {
     const provider = new TelegramStorageProvider({ transport, uploadRetryDelayMs: 0 });
     const payload = new Uint8Array(2048);
     for (let index = 0; index < payload.byteLength; index += 1) payload[index] = (index * 3) % 251;
-    const session = await provider.initiateUpload(uploadInput(payload.byteLength));
+    const expected = await sha256HexOfBytes(payload);
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, 1024, expected));
     const part = new Uint8Array(1024);
     part.set(payload.subarray(0, 1024));
     await provider.uploadPart(session, {
@@ -543,7 +550,55 @@ describe('Telegram storage provider', () => {
     expect(transport.uploadAttempts).toBe(3);
     const stored = await provider.finalizeUpload(session);
     expect(stored.sizeBytes).toBe(payload.byteLength);
-    expect(stored.checksumSha256).toBe(await sha256HexOfBytes(payload));
+    expect(stored.checksumSha256).toBe(expected);
+  });
+
+  it('rejects a part whose declared checksum does not match its bytes, before sending it', async () => {
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport });
+    const session = await provider.initiateUpload(uploadInput(1024, 1024));
+    await expect(
+      provider.uploadPart(session, {
+        partNumber: 1,
+        source: new Uint8Array(1024).fill(4),
+        sizeBytes: 1024,
+        checksumSha256: '0'.repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: 'INTEGRITY_CHECK_FAILED' });
+    // Nothing reached the chat, and no retry was spent on a definitive mismatch.
+    expect(transport.uploadAttempts).toBe(0);
+    expect(transport.messages.size).toBe(0);
+  });
+
+  it('does not read a whole object back when the client declared no checksum', async () => {
+    // The browser never declares a whole-object checksum. Re-downloading a multi-gigabyte object
+    // from Telegram at its read rate would outlast every client timeout, so finalize must commit
+    // on size and per-part checks alone and record no checksum.
+    const transport = new FakeTelegramTransport();
+    const provider = new TelegramStorageProvider({ transport });
+    const payload = new Uint8Array(2048).fill(6);
+    const session = await provider.initiateUpload(uploadInput(payload.byteLength, 1024));
+    await provider.uploadPart(session, {
+      partNumber: 1,
+      source: payload.subarray(0, 1024),
+      sizeBytes: 1024,
+    });
+    await provider.uploadPart(session, {
+      partNumber: 2,
+      source: payload.subarray(1024),
+      sizeBytes: 1024,
+    });
+
+    transport.downloadCalls.length = 0;
+    const stored = await provider.finalizeUpload(session);
+    expect(stored.sizeBytes).toBe(payload.byteLength);
+    expect(stored.checksumSha256).toBeNull();
+    expect(transport.downloadCalls).toHaveLength(0);
+    // The object is still readable byte-for-byte.
+    const read = await provider.openReadStream(stored.ref);
+    expect(await sha256HexOfBytes(await drain(read.stream))).toBe(
+      await sha256HexOfBytes(payload),
+    );
   });
 
   it('does not retry a Telegram size refusal', async () => {

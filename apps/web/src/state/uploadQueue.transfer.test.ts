@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ApiClient } from '../lib/api/client.js';
 import { ApiError } from '../lib/api/errors.js';
-import { PART_RETRY_ATTEMPTS, transferParts, type UploadPartToSend } from './uploadQueue.js';
+import {
+  MAX_IN_FLIGHT_BYTES,
+  PART_RETRY_ATTEMPTS,
+  concurrencyForParts,
+  transferParts,
+  type UploadPartToSend,
+} from './uploadQueue.js';
 
 /**
  * The part-transfer loop.
@@ -162,8 +168,95 @@ describe('transferParts — retry rounds', () => {
   });
 });
 
-describe('transferParts — progress', () => {
-  it('reports a total that only ever grows, however the parallel parts finish', async () => {
+describe('transferParts — part size and checksums', () => {
+  it('lowers concurrency so the bytes in flight stay inside the budget', () => {
+    expect(MAX_IN_FLIGHT_BYTES).toBe(32 * 1024 * 1024);
+    // One 32 MiB part fills the budget, four 8 MiB parts fit, small parts use the whole cap.
+    expect(concurrencyForParts([{ sizeBytes: 32 * 1024 * 1024 }])).toBe(1);
+    expect(concurrencyForParts([{ sizeBytes: 8 * 1024 * 1024 }])).toBe(4);
+    expect(concurrencyForParts([{ sizeBytes: 1024 }])).toBe(6);
+    // The caller's cap still wins when it is lower.
+    expect(concurrencyForParts([{ sizeBytes: 1024 }], 2)).toBe(2);
+  });
+
+  it('hashes a part only when it is sent, once, and never two at a time', async () => {
+    const computed: number[] = [];
+    let activeHashes = 0;
+    let maxActiveHashes = 0;
+    const seen = new Map<number, string | undefined>();
+    const api = {
+      async uploadPart(input: { partNumber: number; checksumSha256?: string }) {
+        seen.set(input.partNumber, input.checksumSha256);
+        return { partNumber: input.partNumber, receivedBytes: 10 };
+      },
+    } as unknown as ApiClient;
+
+    const parts: UploadPartToSend[] = [1, 2, 3].map((partNumber) => ({
+      partNumber,
+      sizeBytes: 10,
+      blob: new Blob([new Uint8Array(10)]),
+      async checksum() {
+        activeHashes += 1;
+        maxActiveHashes = Math.max(maxActiveHashes, activeHashes);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        computed.push(partNumber);
+        activeHashes -= 1;
+        return `sum-${partNumber}`;
+      },
+    }));
+
+    await transferParts({
+      api,
+      uploadId: UPLOAD_ID,
+      parts,
+      signal,
+      concurrency: 3,
+      retryBaseDelayMs: 0,
+    });
+
+    expect(computed.sort((left, right) => left - right)).toEqual([1, 2, 3]);
+    // Three parts were allowed to send at once, but only one was ever hashed at a time: hashing
+    // several parts in parallel is what held a whole file in memory.
+    expect(maxActiveHashes).toBe(1);
+    for (const partNumber of [1, 2, 3]) expect(seen.get(partNumber)).toBe(`sum-${partNumber}`);
+  });
+
+  it('does not re-hash a part when a transient failure sends it again', async () => {
+    let hashes = 0;
+    let calls = 0;
+    const api = {
+      async uploadPart(input: { partNumber: number }) {
+        calls += 1;
+        if (calls === 1) throw apiError(503, 'STORAGE_UNAVAILABLE');
+        return { partNumber: input.partNumber, receivedBytes: 10 };
+      },
+    } as unknown as ApiClient;
+
+    const confirmed = await transferParts({
+      api,
+      uploadId: UPLOAD_ID,
+      parts: [
+        {
+          partNumber: 1,
+          sizeBytes: 10,
+          blob: new Blob([new Uint8Array(10)]),
+          async checksum() {
+            hashes += 1;
+            return 'sum-1';
+          },
+        },
+      ],
+      signal,
+      retryBaseDelayMs: 0,
+    });
+
+    expect(confirmed).toBe(10);
+    expect(calls).toBe(2);
+    expect(hashes).toBe(1);
+  });
+});
+
+describe('transferParts — progress', () => {  it('reports a total that only ever grows, however the parallel parts finish', async () => {
     const sizes = [10, 20, 30];
     const started: number[] = [];
     const gates = new Map<number, () => void>();

@@ -159,6 +159,18 @@ export class UploadSessionStore {
    * Looks a session up for an owner. Expired sessions are swept first, and a session that belongs
    * to another owner is reported as absent — never as forbidden.
    */
+  list(ownerKey: string): UploadSessionView[] {
+    this.sweep();
+    const result: UploadSessionView[] = [];
+    for (const [uploadId, record] of this.records) {
+      if (record.ownerKey !== ownerKey) continue;
+      const progress = this.progress.get(uploadId);
+      if (progress === undefined) continue;
+      result.push({ record, state: progress.state, partsReceived: [...progress.partsReceived] });
+    }
+    return result;
+  }
+
   get(uploadId: string, ownerKey: string): UploadSessionView | null {
     this.sweep();
     const record = this.records.get(uploadId);

@@ -1,0 +1,95 @@
+name: Transcode and upload to Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: 'HTTPS URL of the source media'
+        required: true
+        type: string
+      rendition:
+        description: 'Target rendition (e.g. 720p)'
+        required: true
+        type: string
+        default: '720p'
+      max_size_mb:
+        description: 'Maximum output size in MB'
+        required: false
+        type: number
+        default: 20
+
+jobs:
+  transcode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Download source
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 --retry-delay 5 -o source.bin "$SOURCE_URL"
+          ls -lh source.bin
+
+      - name: Transcode
+        env:
+          RENDITION: ${{ inputs.rendition }}
+        run: |
+          set -euo pipefail
+          case "$RENDITION" in
+            480p) SCALE="854:480" ;;
+            720p) SCALE="1280:720" ;;
+            1080p) SCALE="1920:1080" ;;
+            *) echo "Unknown rendition: $RENDITION" >&2; exit 1 ;;
+          esac
+          ffmpeg -y -i source.bin \
+            -vf "scale=$SCALE:force_original_aspect_ratio=decrease" \
+            -c:v libx264 -preset fast -crf 23 \
+            -c:a aac -b:a 128k \
+            -movflags +faststart \
+            output.mp4
+          ls -lh output.mp4
+
+      - name: Enforce size limit
+        env:
+          MAX_SIZE_MB: ${{ inputs.max_size_mb }}
+        run: |
+          set -euo pipefail
+          size_mb=$(du -m output.mp4 | cut -f1)
+          echo "Output size: ${size_mb} MB (limit ${MAX_SIZE_MB} MB)"
+          if [ "$size_mb" -gt "$MAX_SIZE_MB" ]; then
+            echo "Output exceeds size limit" >&2
+            exit 1
+          fi
+
+      - name: Upload to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_STORAGE_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+            echo "Telegram secrets not configured" >&2
+            exit 1
+          fi
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${CHAT_ID}" \
+            -F "document=@output.mp4" \
+            -F "caption=Transcoded ${{ inputs.rendition }}" \
+            -o telegram_response.json
+          cat telegram_response.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcoded-${{ inputs.rendition }}
+          path: |
+            output.mp4
+            telegram_response.json

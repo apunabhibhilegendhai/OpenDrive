@@ -16,6 +16,10 @@ async function main(): Promise<void> {
   const storage = resolveStorageProvider(config);
   const app = await buildServer({ config, storage });
 
+  for (const warning of config.configurationWarnings) {
+    app.log.warn({ configuration: true }, warning);
+  }
+
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       app.log.info({ signal }, 'shutting down');

@@ -49,6 +49,7 @@ import {
   ContractError,
   NETWORK_FAILURE_MESSAGE,
   NetworkError,
+  parseRetryAfter,
   problemFrom,
 } from './errors.js';
 
@@ -215,7 +216,11 @@ export class ApiClient {
       this.#onAuthFailure?.();
     }
     if (!response.ok) {
-      throw problemFrom(response.status, payload);
+      const error = problemFrom(response.status, payload);
+      if (response.status === 429) {
+        error.retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));
+      }
+      throw error;
     }
     const parsed = schema.safeParse(payload);
     if (!parsed.success) {
@@ -457,6 +462,40 @@ export class ApiClient {
     });
   }
 
+  listUploads(signal?: AbortSignal): Promise<
+    {
+      uploadId: string;
+      fileId: string;
+      state: string;
+      partsReceived: number[];
+      declaredSizeBytes: number;
+      chunkSizeBytes: number;
+      expiresAt: string;
+    }[]
+  > {
+    return this.request(
+      `${API_PREFIX}/uploads`,
+      { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,
+      { ...(signal ? { signal } : {}) },
+    ) as Promise<any>;
+  }
+
+  listRenditions(fileId: string, signal?: AbortSignal): Promise<{ label: string; url: string; createdAt: string }[]> {
+    return this.request(
+      `${API_PREFIX}/files/${fileId}/renditions`,
+      { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,
+      { ...(signal ? { signal } : {}) },
+    ) as Promise<any>;
+  }
+
+  registerRendition(fileId: string, body: { label: string; url: string }, signal?: AbortSignal) {
+    return this.request(
+      `${API_PREFIX}/files/${fileId}/renditions`,
+      { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,
+      { method: 'POST', body, ...(signal ? { signal } : {}) },
+    ) as Promise<any>;
+  }
+
   /**
    * Finalize an upload.
    *
@@ -588,7 +627,11 @@ export class ApiClient {
           this.#onAuthFailure?.();
         }
         if (request.status < 200 || request.status >= 300) {
-          reject(problemFrom(request.status, payload));
+          const error = problemFrom(request.status, payload);
+          if (request.status === 429) {
+            error.retryAfterMs = parseRetryAfter(request.getResponseHeader('retry-after'));
+          }
+          reject(error);
           return;
         }
         const parsed = uploadPartResponseSchema.safeParse(payload);

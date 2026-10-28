@@ -112,6 +112,22 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ STORAGE_CHUNK_SIZE_BYTES: '-5' })).toThrow(/positive integer/);
   });
 
+  it('clamps a part size that would fail at the edge and says so in a warning', () => {
+    // 100 MiB is exactly the value the deployment used to carry. It sits above Cloudflare's 100 MB
+    // body cap and a part that size outlived the 125 s origin timeout, which is what failed the
+    // upload. The API keeps serving with the edge-safe value instead of accepting a size that
+    // cannot arrive.
+    const config = loadConfig({ STORAGE_CHUNK_SIZE_BYTES: String(100 * 1024 * 1024) });
+    expect(config.limits.chunkSizeBytes).toBe(32 * 1024 * 1024);
+    expect(config.configurationWarnings).toHaveLength(1);
+    expect(config.configurationWarnings[0]).toMatch(/STORAGE_CHUNK_SIZE_BYTES=104857600/);
+
+    // A safe value passes through untouched, with no warning.
+    const safe = loadConfig({ STORAGE_CHUNK_SIZE_BYTES: String(8 * 1024 * 1024) });
+    expect(safe.limits.chunkSizeBytes).toBe(8 * 1024 * 1024);
+    expect(safe.configurationWarnings).toEqual([]);
+  });
+
   it('parses the --local Bot API server file-serving settings', () => {
     const config = loadConfig({
       TELEGRAM_WORK_DIR: '/var/lib/telegram-bot-api',

@@ -29,6 +29,18 @@ export const MIN_CHUNK_SIZE_BYTES = MIB;
 export const MAX_CHUNK_SIZE_BYTES = 2_000_000_000;
 export const MAX_PARTS_PER_UPLOAD = 10_000;
 
+/**
+ * Largest part that reliably clears the edge proxy in front of the API.
+ *
+ * A Cloudflare-proxied hostname refuses a request body over 100 MB (100,000,000 bytes, not 100
+ * MiB) and gives the origin 125 seconds to start answering. A 100 MiB part sits *above* the byte
+ * cap and, on an ordinary uplink, outlives the timeout, which a 2 GiB upload met as a `524` after
+ * 169 seconds. 32 MiB keeps every part well inside both bounds — one request that finishes in a
+ * minute or two even on a slow connection — while still needing only 64 parts for the 2 GiB
+ * target.
+ */
+export const EDGE_SAFE_MAX_CHUNK_SIZE_BYTES = 32 * MIB;
+
 export const limitsConfigSchema = z.object({
   maxFileSizeBytes: z
     .number()

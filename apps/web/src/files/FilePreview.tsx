@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import type { Player } from 'mpegts.js';
+import { useEffect, useState } from 'react';
 import type { FileRecord } from '@opendrive/shared';
 import { Icon } from '../components/Icon.js';
 import type { ApiClient } from '../lib/api/client.js';
 import { describeFailure } from '../lib/api/errors.js';
 import { familyOf } from '../lib/files/kind.js';
+import { VideoPlayer } from './VideoPlayer.js';
 
 /**
  * Inline preview for one file.
@@ -35,7 +35,6 @@ const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 
 export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord }) {
   const [state, setState] = useState<PreviewState>({ status: 'loading' });
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const isMpegTs =
     file.mimeType === 'video/mp2t' ||
@@ -85,58 +84,6 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
     };
   }, [api, file]);
 
-  // mpegts.js is only needed for one format, so it stays a lazy chunk and the effect below is the
-  // only thing that pulls it in. `videoUrl` is derived rather than closing over `state` so the
-  // dependency list can name the URL the player actually loads.
-  const videoUrl = state.status === 'video' ? state.url : null;
-
-  useEffect(() => {
-    if (videoUrl === null || !isMpegTs || videoRef.current === null) return;
-    const element = videoRef.current;
-    let player: Player | null = null;
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const mpegts = (await import('mpegts.js')).default;
-        if (cancelled || !mpegts.isSupported()) {
-          if (!cancelled) {
-            setState({
-              status: 'unavailable',
-              detail: 'Your browser cannot play this video format. Download it to open it.',
-            });
-          }
-          return;
-        }
-        const created = mpegts.createPlayer(
-          { type: 'mpegts', isLive: false, url: videoUrl, cors: true },
-          { enableWorker: false },
-        );
-        // The chunk can arrive after this effect was already torn down (React re-runs effects in
-        // development): attaching then would leave a player feeding a detached element, so the
-        // late one is discarded instead.
-        if (cancelled) {
-          created.destroy();
-          return;
-        }
-        player = created;
-        player.attachMediaElement(element);
-        player.load();
-      } catch {
-        if (!cancelled) {
-          setState({
-            status: 'unavailable',
-            detail: 'Your browser cannot play this video format. Download it to open it.',
-          });
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      player?.destroy();
-    };
-  }, [videoUrl, isMpegTs]);
 
   return (
     <section className="preview" aria-label={`Preview of ${file.filename}`}>
@@ -150,20 +97,7 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
         <img className="preview__image" src={state.url} alt={file.filename} />
       )}
       {state.status === 'video' && (
-        <video
-          ref={videoRef}
-          className="preview__video"
-          src={isMpegTs ? undefined : state.url}
-          controls
-          playsInline
-          preload="metadata"
-          onError={() =>
-            setState({
-              status: 'unavailable',
-              detail: 'Your browser cannot play this video format. Download it to open it.',
-            })
-          }
-        />
+        <VideoPlayer src={state.url} isMpegTs={isMpegTs} />
       )}
       {state.status === 'audio' && (
         <audio className="preview__audio" src={state.url} controls preload="metadata" />
