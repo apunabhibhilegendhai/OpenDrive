@@ -256,7 +256,8 @@ describe('transferParts — part size and checksums', () => {
   });
 });
 
-describe('transferParts — progress', () => {  it('reports a total that only ever grows, however the parallel parts finish', async () => {
+describe('transferParts — progress', () => {
+  it('reports a total that only ever grows, however the parallel parts finish', async () => {
     const sizes = [10, 20, 30];
     const started: number[] = [];
     const gates = new Map<number, () => void>();

@@ -84,7 +84,6 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
     };
   }, [api, file]);
 
-
   return (
     <section className="preview" aria-label={`Preview of ${file.filename}`}>
       {state.status === 'loading' && (
@@ -96,9 +95,7 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
       {state.status === 'image' && (
         <img className="preview__image" src={state.url} alt={file.filename} />
       )}
-      {state.status === 'video' && (
-        <VideoPlayer src={state.url} isMpegTs={isMpegTs} />
-      )}
+      {state.status === 'video' && <VideoPlayer src={state.url} isMpegTs={isMpegTs} />}
       {state.status === 'audio' && (
         <audio className="preview__audio" src={state.url} controls preload="metadata" />
       )}

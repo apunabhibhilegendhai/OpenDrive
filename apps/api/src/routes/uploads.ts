@@ -395,7 +395,19 @@ export const uploadRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       schema: {
         tags: ['uploads'],
         summary: 'List open upload sessions for the caller',
-        response: { 200: z.array(z.object({ uploadId: z.string(), fileId: z.string(), state: z.string(), partsReceived: z.array(z.number()), declaredSizeBytes: z.number(), chunkSizeBytes: z.number(), expiresAt: z.string() })) },
+        response: {
+          200: z.array(
+            z.object({
+              uploadId: z.string(),
+              fileId: z.string(),
+              state: z.string(),
+              partsReceived: z.array(z.number()),
+              declaredSizeBytes: z.number(),
+              chunkSizeBytes: z.number(),
+              expiresAt: z.string(),
+            }),
+          ),
+        },
       },
     },
     async (request) => {

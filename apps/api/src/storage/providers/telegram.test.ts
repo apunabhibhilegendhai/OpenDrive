@@ -596,9 +596,7 @@ describe('Telegram storage provider', () => {
     expect(transport.downloadCalls).toHaveLength(0);
     // The object is still readable byte-for-byte.
     const read = await provider.openReadStream(stored.ref);
-    expect(await sha256HexOfBytes(await drain(read.stream))).toBe(
-      await sha256HexOfBytes(payload),
-    );
+    expect(await sha256HexOfBytes(await drain(read.stream))).toBe(await sha256HexOfBytes(payload));
   });
 
   it('does not retry a Telegram size refusal', async () => {

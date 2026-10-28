@@ -14,9 +14,12 @@ export function VideoPlayer({ src, isMpegTs }: { src: string; isMpegTs: boolean 
   const [failed, setFailed] = useState(false);
   const [bufferedPercent, setBufferedPercent] = useState(0);
   const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (stallTimer.current !== null) clearTimeout(stallTimer.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (stallTimer.current !== null) clearTimeout(stallTimer.current);
+    },
+    [],
+  );
 
   // MPEG-TS needs mpegts.js; everything else uses the native element.
   useEffect(() => {
@@ -84,7 +87,14 @@ export function VideoPlayer({ src, isMpegTs }: { src: string; isMpegTs: boolean 
     return (
       <div className="preview__status">
         <p>Your browser cannot play this video. Download it to open it.</p>
-        <button type="button" className="btn btn--ghost" onClick={() => { setFailed(false); videoRef.current?.load(); }}>
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={() => {
+            setFailed(false);
+            videoRef.current?.load();
+          }}
+        >
           Retry
         </button>
       </div>
@@ -140,7 +150,12 @@ export function VideoPlayer({ src, isMpegTs }: { src: string; isMpegTs: boolean 
         </div>
       )}
       <div className="video-player__controls">
-        <button type="button" className="btn btn--ghost btn--icon" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
+        <button
+          type="button"
+          className="btn btn--ghost btn--icon"
+          onClick={togglePlay}
+          aria-label={playing ? 'Pause' : 'Play'}
+        >
           {playing ? 'Pause' : 'Play'}
         </button>
         <input
@@ -176,7 +191,12 @@ export function VideoPlayer({ src, isMpegTs }: { src: string; isMpegTs: boolean 
           }}
           aria-label="Volume"
         />
-        <button type="button" className="btn btn--ghost btn--icon" onClick={() => void toggleFullscreen()} aria-label="Fullscreen">
+        <button
+          type="button"
+          className="btn btn--ghost btn--icon"
+          onClick={() => void toggleFullscreen()}
+          aria-label="Fullscreen"
+        >
           Fullscreen
         </button>
       </div>

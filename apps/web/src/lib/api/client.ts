@@ -480,7 +480,10 @@ export class ApiClient {
     ) as Promise<any>;
   }
 
-  listRenditions(fileId: string, signal?: AbortSignal): Promise<{ label: string; url: string; createdAt: string }[]> {
+  listRenditions(
+    fileId: string,
+    signal?: AbortSignal,
+  ): Promise<{ label: string; url: string; createdAt: string }[]> {
     return this.request(
       `${API_PREFIX}/files/${fileId}/renditions`,
       { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,

@@ -307,12 +307,14 @@ export async function transferParts(options: {
   // the socket. Several parts are in the air at once, so the reported figure has to be the sum of
   // both; reporting only whichever part spoke last makes it jump backwards.
   const inFlightBytes = new Map<number, number>();
-  let confirmedBytes = options.partsReceived === undefined
-    ? 0
-    : options.parts.reduce(
-        (total, part) => total + (options.partsReceived!.includes(part.partNumber) ? part.sizeBytes : 0),
-        0,
-      );
+  let confirmedBytes =
+    options.partsReceived === undefined
+      ? 0
+      : options.parts.reduce(
+          (total, part) =>
+            total + (options.partsReceived!.includes(part.partNumber) ? part.sizeBytes : 0),
+          0,
+        );
   const report = (): void => {
     let inFlight = 0;
     for (const sent of inFlightBytes.values()) inFlight += sent;
@@ -335,7 +337,6 @@ export async function transferParts(options: {
       hashSemaphore.release();
     }
   }
-
 
   const semaphore = new Semaphore(concurrency);
   report();
@@ -367,7 +368,9 @@ export async function transferParts(options: {
               uploadId: options.uploadId,
               partNumber: part.partNumber,
               body: part.blob,
-              ...(part.checksum === undefined ? {} : { checksumSha256: await resolveChecksum(part) }),
+              ...(part.checksum === undefined
+                ? {}
+                : { checksumSha256: await resolveChecksum(part) }),
               signal: options.signal,
               onProgress: (sent) => {
                 // Held per part number, so it adds to the confirmed total instead of replacing it.
@@ -507,23 +510,23 @@ export function UploadQueueProvider({
       };
     });
     setItems((current) => [...current, ...additions]);
-     await Promise.all(
-       additions.map(async (item, index) => {
-         const file = incoming[index];
-         if (file === undefined) return;
-         const persisted = await loadSession(fileFingerprint(file));
-         if (persisted === null) return;
-         if (new Date(persisted.expiresAt).getTime() <= Date.now()) {
-           await deleteSession(fileFingerprint(file));
-           return;
-         }
-         patch(item.id, {
-           uploadId: persisted.uploadId,
-           fileId: persisted.fileId,
-           uploadedBytes: 0,
-         });
-       }),
-     );
+    await Promise.all(
+      additions.map(async (item, index) => {
+        const file = incoming[index];
+        if (file === undefined) return;
+        const persisted = await loadSession(fileFingerprint(file));
+        if (persisted === null) return;
+        if (new Date(persisted.expiresAt).getTime() <= Date.now()) {
+          await deleteSession(fileFingerprint(file));
+          return;
+        }
+        patch(item.id, {
+          uploadId: persisted.uploadId,
+          fileId: persisted.fileId,
+          uploadedBytes: 0,
+        });
+      }),
+    );
   }, []);
 
   /** Run one item to a terminal state. */
@@ -568,18 +571,18 @@ export function UploadQueueProvider({
           fileId: initiated.fileId,
           phase: 'uploading',
         });
-          void saveSession({
-            fingerprint: fileFingerprint(file),
-            uploadId: initiated.uploadId,
-            fileId: initiated.fileId,
-            partSizeBytes: initiated.chunkSizeBytes,
-            sizeBytes: item.sizeBytes,
-            name: item.name,
-            mimeType: item.mimeType,
-            folderId: item.folderId,
-            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-            updatedAt: Date.now(),
-          });
+        void saveSession({
+          fingerprint: fileFingerprint(file),
+          uploadId: initiated.uploadId,
+          fileId: initiated.fileId,
+          partSizeBytes: initiated.chunkSizeBytes,
+          sizeBytes: item.sizeBytes,
+          name: item.name,
+          mimeType: item.mimeType,
+          folderId: item.folderId,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          updatedAt: Date.now(),
+        });
         if (initiated.deletionToken !== undefined) {
           patch(item.id, { deletionToken: initiated.deletionToken });
           rememberDeletionToken(initiated.fileId, initiated.deletionToken);
@@ -629,7 +632,7 @@ export function UploadQueueProvider({
           fileId: completed.file.id,
           uploadedBytes: item.sizeBytes,
         });
-          void deleteSession(fileFingerprint(file));
+        void deleteSession(fileFingerprint(file));
         files.current.delete(item.id);
         sessions.current.delete(item.id);
         onUploadCompleted?.(completed.file.id);
@@ -699,20 +702,20 @@ export function UploadQueueProvider({
     [api, items, patch],
   );
 
-   const retry = useCallback(
-     (localId: string) => {
-       const item = items.find((candidate) => candidate.id === localId);
-       if (item === undefined || item.phase !== 'failed') return;
-       if (!files.current.has(localId)) {
-         patch(localId, {
-           error: 'The file is no longer available in this tab; pick it again to resume.',
-         });
-         return;
-       }
-       patch(localId, { phase: 'queued', error: null });
-     },
-     [items, patch],
-   );
+  const retry = useCallback(
+    (localId: string) => {
+      const item = items.find((candidate) => candidate.id === localId);
+      if (item === undefined || item.phase !== 'failed') return;
+      if (!files.current.has(localId)) {
+        patch(localId, {
+          error: 'The file is no longer available in this tab; pick it again to resume.',
+        });
+        return;
+      }
+      patch(localId, { phase: 'queued', error: null });
+    },
+    [items, patch],
+  );
 
   const dismiss = useCallback((localId: string) => {
     files.current.delete(localId);

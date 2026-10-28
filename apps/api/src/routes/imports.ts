@@ -6,7 +6,12 @@ import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
 import { createFile, applyFileTransition } from '../db/repositories/files.js';
 import { insertActiveStorageObject } from '../db/repositories/storage-objects.js';
-import { reserveStorage, commitReservation, releaseReservation, quotaArgsFor } from '../db/repositories/quota.js';
+import {
+  reserveStorage,
+  commitReservation,
+  releaseReservation,
+  quotaArgsFor,
+} from '../db/repositories/quota.js';
 import { newId } from '@opendrive/shared';
 import { assertTransition } from '@opendrive/shared';
 
@@ -32,7 +37,8 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         throw new Error('invalid url');
       }
       if (parsed.protocol !== 'https:') throw new Error('https required');
-      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') throw new Error('private host');
+      if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+        throw new Error('private host');
 
       const maxBytes = services.config.limits.maxFileSizeBytes;
       const controller = new AbortController();
@@ -107,10 +113,19 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         });
 
         await commitReservation(sql, reservationId);
-        assertTransition('pending_upload', 'uploaded', { scanningEnabled: services.config.limits.malwareScanEnabled });
-        await applyFileTransition(sql, { fileId, ownerKey, from: 'pending_upload', to: 'uploaded' });
+        assertTransition('pending_upload', 'uploaded', {
+          scanningEnabled: services.config.limits.malwareScanEnabled,
+        });
+        await applyFileTransition(sql, {
+          fileId,
+          ownerKey,
+          from: 'pending_upload',
+          to: 'uploaded',
+        });
         const target = services.config.limits.malwareScanEnabled ? 'scanning' : 'ready';
-        assertTransition('uploaded', target, { scanningEnabled: services.config.limits.malwareScanEnabled });
+        assertTransition('uploaded', target, {
+          scanningEnabled: services.config.limits.malwareScanEnabled,
+        });
         await applyFileTransition(sql, { fileId, ownerKey, from: 'uploaded', to: target as any });
       } catch (error) {
         await releaseReservation(sql, reservationId);
