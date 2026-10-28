@@ -6,14 +6,8 @@ import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
 import { createFile, applyFileTransition } from '../db/repositories/files.js';
 import { insertActiveStorageObject } from '../db/repositories/storage-objects.js';
-import {
-  reserveStorage,
-  commitReservation,
-  releaseReservation,
-  quotaArgsFor,
-} from '../db/repositories/quota.js';
-import { newId } from '@opendrive/shared';
-import { assertTransition } from '@opendrive/shared';
+import { reserveStorage, commitReservation, releaseReservation, quotaArgsFor } from '../db/repositories/quota.js';
+import { newId, assertTransition } from '@opendrive/shared';
 
 export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
   app.post(
@@ -53,17 +47,17 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
       const size = Number(response.headers.get('content-length') ?? '0');
       if (size <= 0 || size > maxBytes) throw new Error('bad size');
 
+      const fileId = newId('file');
       const reservationId = newId('quotaReservation');
       const reservation = await reserveStorage(sql, {
         reservationId,
         principal: quotaArgsFor(principal),
-        fileId: null as any,
+        fileId,
         bytes: size,
         ttlSeconds: 3600,
       });
       if (!reservation.ok) throw new Error('quota refused');
 
-      const fileId = newId('file');
       const filename = parsed.pathname.split('/').pop() || 'imported';
       const mimeType = response.headers.get('content-type') ?? 'application/octet-stream';
 
@@ -71,7 +65,7 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         id: fileId,
         owner: {
           ownerKey,
-          ownerUserId: principal.kind === 'user' ? (principal as { userId: string }).userId : null,
+          ownerUserId: principal.kind === 'user' ? principal.userId : null,
           ownerSessionId: principal.kind === 'anonymous' ? principal.sessionId : null,
         },
         folderId: null,
@@ -87,10 +81,11 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
         const session = await provider.initiateUpload({
           uploadId: newId('upload'),
           fileId,
-          declaredSizeBytes: size,
+          filename,
+          sizeBytes: size,
           mimeType,
           chunkSizeBytes: size,
-        } as any);
+        });
 
         const stream = (async function* () {
           const reader = response.body!.getReader();
@@ -103,8 +98,9 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
 
         const stored = await provider.uploadWholeObject({
           session,
-          source: stream as any,
-        } as any);
+          source: stream,
+          sizeBytes: size,
+        });
 
         await insertActiveStorageObject(sql, {
           id: newId('storageObject'),
@@ -123,10 +119,8 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
           to: 'uploaded',
         });
         const target = services.config.limits.malwareScanEnabled ? 'scanning' : 'ready';
-        assertTransition('uploaded', target, {
-          scanningEnabled: services.config.limits.malwareScanEnabled,
-        });
-        await applyFileTransition(sql, { fileId, ownerKey, from: 'uploaded', to: target as any });
+        assertTransition('uploaded', target, { scanningEnabled: services.config.limits.malwareScanEnabled });
+        await applyFileTransition(sql, { fileId, ownerKey, from: 'uploaded', to: target });
       } catch (error) {
         await releaseReservation(sql, reservationId);
         throw error;
