@@ -4,7 +4,6 @@ import { REQUIRED_SCOPES, assertFileOwnership, ownerKeyOf, requireScope } from '
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
 import { findFileById } from '../db/repositories/files.js';
-import { z } from 'zod';
 
 interface Rendition {
   label: string;
@@ -14,14 +13,15 @@ interface Rendition {
 
 const store = new Map<string, Rendition[]>();
 
-export const renditionRoutes: FastifyPluginAsyncZod<AppServices> = async (app) => {
+export const renditionRoutes: FastifyPluginAsyncZod<AppServices> = async (app, services) => {
   app.get(
     '/api/v1/files/:fileId/renditions',
     { schema: { params: z.object({ fileId: z.string() }) } },
     async (request) => {
       const identity = requireScope(requestIdentity(request), REQUIRED_SCOPES.filesRead);
-      const sql = (app as any).services?.db?.requireSql?.() ?? null;
-      // Ownership check is best-effort here; the list is process-local.
+      const sql = services.db.requireSql();
+      const file = await findFileById(sql, request.params.fileId, ownerKeyOf(identity));
+      assertFileOwnership(identity, file);
       return store.get(request.params.fileId) ?? [];
     },
   );

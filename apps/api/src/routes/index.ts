@@ -6,7 +6,6 @@ import { deliveryRoutes } from './delivery.js';
 import { fileRoutes } from './files.js';
 import { importRoutes } from './imports.js';
 import { renditionRoutes } from './renditions.js';
-import { importRoutes } from './imports.js';
 import { folderRoutes } from './folders.js';
 import { identityRoutes } from './identity.js';
 import { migrationRoutes } from './migration.js';
@@ -33,8 +32,6 @@ export const registerRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
   await app.register(fileRoutes, services);
   await app.register(importRoutes, services);
   await app.register(renditionRoutes, services);
-  await app.register(importRoutes, services);
-  await app.register(importRoutes, services);
   await app.register(deliveryRoutes, services);
   await app.register(folderRoutes, services);
   await app.register(shareRoutes, services);
