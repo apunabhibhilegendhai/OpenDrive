@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
+import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import { REQUIRED_SCOPES, ownerKeyOf, principalOf, requireScope } from '../authz.js';
 import { requestIdentity } from '../plugins/identity.js';
 import type { AppServices } from '../services.js';
@@ -92,12 +93,13 @@ export const importRoutes: FastifyPluginAsyncZod<AppServices> = async (app, serv
           chunkSizeBytes: size,
         });
 
-        const stream = (async function* () {
-          const reader = response.body!.getReader();
+        const stream = (async function* (): AsyncGenerator<Uint8Array> {
+          const reader =
+            response.body!.getReader() as unknown as ReadableStreamDefaultReader<Uint8Array>;
           while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            yield value;
+            const result = await reader.read();
+            if (result.done) return;
+            yield result.value;
           }
         })();
 

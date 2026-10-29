@@ -95,7 +95,7 @@ export interface UploadItem {
 export interface UploadQueueValue {
   items: UploadItem[];
   busy: boolean;
-  enqueue: (files: File[], folderId: string | null) => void;
+  enqueue: (files: File[], folderId: string | null) => Promise<void>;
   cancel: (localId: string) => void;
   retry: (localId: string) => void;
   dismiss: (localId: string) => void;

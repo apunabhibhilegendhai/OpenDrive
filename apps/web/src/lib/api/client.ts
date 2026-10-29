@@ -473,30 +473,40 @@ export class ApiClient {
       expiresAt: string;
     }[]
   > {
-    return this.request(
-      `${API_PREFIX}/uploads`,
-      { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,
-      { ...(signal ? { signal } : {}) },
-    ) as Promise<any>;
+    return this.request(`${API_PREFIX}/uploads`, passthroughSchema, {
+      ...(signal ? { signal } : {}),
+    }) as Promise<
+      {
+        uploadId: string;
+        fileId: string;
+        state: string;
+        partsReceived: number[];
+        declaredSizeBytes: number;
+        chunkSizeBytes: number;
+        expiresAt: string;
+      }[]
+    >;
   }
 
   listRenditions(
     fileId: string,
     signal?: AbortSignal,
   ): Promise<{ label: string; url: string; createdAt: string }[]> {
-    return this.request(
-      `${API_PREFIX}/files/${fileId}/renditions`,
-      { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,
-      { ...(signal ? { signal } : {}) },
-    ) as Promise<any>;
+    return this.request(`${API_PREFIX}/files/${fileId}/renditions`, passthroughSchema, {
+      ...(signal ? { signal } : {}),
+    }) as Promise<{ label: string; url: string; createdAt: string }[]>;
   }
 
-  registerRendition(fileId: string, body: { label: string; url: string }, signal?: AbortSignal) {
-    return this.request(
-      `${API_PREFIX}/files/${fileId}/renditions`,
-      { safeParse: (value: unknown) => ({ success: true, data: value }) } as any,
-      { method: 'POST', body, ...(signal ? { signal } : {}) },
-    ) as Promise<any>;
+  registerRendition(
+    fileId: string,
+    body: { label: string; url: string },
+    signal?: AbortSignal,
+  ): Promise<{ label: string; url: string; createdAt: string }> {
+    return this.request(`${API_PREFIX}/files/${fileId}/renditions`, passthroughSchema, {
+      method: 'POST',
+      body,
+      ...(signal ? { signal } : {}),
+    }) as Promise<{ label: string; url: string; createdAt: string }>;
   }
 
   /**
@@ -742,6 +752,10 @@ export class ApiClient {
     );
   }
 }
+
+const passthroughSchema: Schema<unknown> = {
+  safeParse: (value: unknown) => ({ success: true, data: value }),
+};
 
 const emptySchema: Schema<undefined> = {
   safeParse: (value: unknown) => {

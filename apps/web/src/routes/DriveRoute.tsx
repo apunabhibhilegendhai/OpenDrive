@@ -196,7 +196,7 @@ export function DriveRoute() {
         else notify(`${file.name}: ${plan.reason}`, 'danger');
       }
       if (accepted.length > 0) {
-        queue.enqueue(accepted, folderId);
+        void queue.enqueue(accepted, folderId);
         notify(
           accepted.length === 1 ? 'Upload started.' : `${accepted.length} uploads queued.`,
           'info',
