@@ -270,6 +270,14 @@
   text-transform: uppercase;
 }
 
+.video-player__buffer-note {
+  margin: 0 0 var(--space-2);
+  color: var(--player-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
 .video-player__chips {
   display: flex;
   flex-wrap: wrap;

@@ -20,6 +20,56 @@ const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const CONTROLS_HIDE_DELAY_MS = 2800;
 const STALL_NUDGE_DELAY_MS = 10_000;
 const FULLSCREEN_SETTLE_TIMEOUT_MS = 700;
+const PRELOAD_STORAGE_KEY = 'opendrive:player:preload';
+
+type PreloadMode = 'auto' | 'metadata' | 'none';
+
+/**
+ * How much of the media the browser should pull ahead of the playhead.
+ *
+ * `auto` lets the browser decide (and on a slow or metered connection we downgrade to metadata so
+ * we never burn a mobile plan buffering a film nobody watches). `metadata` fetches only the index
+ * and the first frame, which is enough to seek without a full download. `none` disables preloading
+ * entirely for the most constrained links.
+ */
+const PRELOAD_MODES: readonly PreloadMode[] = ['auto', 'metadata', 'none'];
+
+function readStoredPreload(): PreloadMode {
+  try {
+    const value = window.localStorage.getItem(PRELOAD_STORAGE_KEY);
+    return PRELOAD_MODES.includes(value as PreloadMode) ? (value as PreloadMode) : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+function writeStoredPreload(mode: PreloadMode): void {
+  try {
+    window.localStorage.setItem(PRELOAD_STORAGE_KEY, mode);
+  } catch {
+    // Private mode or a blocked storage: the choice simply does not persist.
+  }
+}
+
+/**
+ * A conservative read of the link. The Network Information API is experimental and absent on
+ * several engines, so every access is guarded and `null` means "unknown, assume reasonable".
+ */
+function connectionIsSlow(): boolean {
+  const connection = (
+    navigator as Navigator & {
+      connection?: { saveData?: boolean; effectiveType?: string };
+    }
+  ).connection;
+  if (connection === undefined) return false;
+  if (connection.saveData === true) return true;
+  return connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g';
+}
+
+function effectivePreload(mode: PreloadMode): 'auto' | 'metadata' | 'none' {
+  if (mode === 'auto') return connectionIsSlow() ? 'metadata' : 'auto';
+  return mode;
+}
 
 type FullscreenElement = HTMLElement & {
   webkitRequestFullscreen?: () => Promise<void> | void;
@@ -161,6 +211,9 @@ export function VideoPlayer({
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [rate, setRate] = useState(1);
+  const [preload, setPreload] = useState<PreloadMode>(() => readStoredPreload());
+  const [bufferedAhead, setBufferedAhead] = useState(0);
+  const [readyToPlay, setReadyToPlay] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [failed, setFailed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -219,6 +272,8 @@ export function VideoPlayer({
     setPlaying(false);
     setFailed(false);
     setAnnouncement('');
+    setBufferedAhead(0);
+    setReadyToPlay(false);
   }, [activeSrc, reloadToken]);
 
   // MPEG-TS has no native browser decoder; mpegts.js transmuxes it into MSE.
@@ -238,7 +293,14 @@ export function VideoPlayer({
         }
         const created = mpegts.createPlayer(
           { type: 'mpegts', isLive: false, url: activeSrc, cors: true },
-          { enableWorker: false },
+          {
+            enableWorker: false,
+            autoCleanupSourceBuffer: true,
+            autoCleanupMaxBackwardDuration: 30,
+            autoCleanupMinBackwardDuration: 10,
+            lazyLoad: false,
+            seekType: 'range',
+          } as unknown as Parameters<typeof mpegts.createPlayer>[1],
         ) as MpegtsPlayer;
         if (cancelled) {
           created.destroy();
@@ -415,6 +477,16 @@ export function VideoPlayer({
   const changeRate = useCallback((next: number) => {
     setRate(next);
     setAnnouncement(`Playback speed ${next}×`);
+  }, []);
+
+  const changePreload = useCallback((next: PreloadMode) => {
+    setPreload(next);
+    writeStoredPreload(next);
+    setAnnouncement(
+      next === 'auto'
+        ? `Preload: auto (${connectionIsSlow() ? 'metadata on this link' : 'buffer ahead'})`
+        : `Preload: ${next}`,
+    );
   }, []);
 
   const chooseSource = useCallback(
@@ -598,7 +670,9 @@ export function VideoPlayer({
   const onProgress = () => {
     const video = videoRef.current;
     if (video === null || video.buffered.length === 0) return;
-    setBuffered(video.buffered.end(video.buffered.length - 1));
+    const end = video.buffered.end(video.buffered.length - 1);
+    setBuffered(end);
+    setBufferedAhead(Math.max(0, end - video.currentTime));
   };
 
   const onWaiting = () => {
@@ -667,7 +741,7 @@ export function VideoPlayer({
         className="video-player__media"
         src={isMpegTs ? undefined : activeSrc}
         playsInline
-        preload="metadata"
+        preload={effectivePreload(preload)}
         aria-label={title ?? 'Video'}
         onClick={() => {
           containerRef.current?.focus({ preventScroll: true });
@@ -699,6 +773,7 @@ export function VideoPlayer({
           setBuffering(false);
           clearStall();
         }}
+        onCanPlayThrough={() => setReadyToPlay(true)}
         onVolumeChange={onVolumeChange}
         onRateChange={() => setRate(videoRef.current?.playbackRate ?? 1)}
         onError={() => {
@@ -877,6 +952,34 @@ export function VideoPlayer({
                     </button>
                   ))}
                 </div>
+
+                <p className="video-player__panel-label">Preload</p>
+                <div className="video-player__chips">
+                  {PRELOAD_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={
+                        mode === preload
+                          ? 'video-player__chip video-player__chip--active'
+                          : 'video-player__chip'
+                      }
+                      aria-pressed={mode === preload}
+                      onClick={() => changePreload(mode)}
+                    >
+                      {mode === 'auto' ? 'Auto' : mode === 'metadata' ? 'Metadata' : 'None'}
+                    </button>
+                  ))}
+                </div>
+
+                <p className="video-player__panel-label">Buffer</p>
+                <p className="video-player__buffer-note">
+                  {bufferedAhead > 0
+                    ? `${bufferedAhead.toFixed(1)}s ahead${readyToPlay ? ' · ready' : ''}`
+                    : readyToPlay
+                      ? 'Ready to play'
+                      : 'Waiting for data'}
+                </p>
 
                 {sources.length > 0 && (
                   <>
