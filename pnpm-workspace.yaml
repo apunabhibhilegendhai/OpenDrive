@@ -15,7 +15,13 @@ catalog:
   'tsx': 4.23.15
   'typescript': 6.0.3
   'vitest': 5.0.3
-  'zod': 4.6.5
+  'zod': 4.6.6
+
+# Force transitive dev-dependency undici (pulled by jsdom) above the patched floor.
+# jsdom's own range still allows the older release, so the override is what keeps
+# `pnpm audit` clean without waiting for a jsdom release.
+overrides:
+  undici: '>=8.12.2'
 
 minimumReleaseAgeExclude:
   - '@types/node@26.6.5'
