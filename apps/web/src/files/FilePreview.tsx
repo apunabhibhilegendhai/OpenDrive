@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { FileRecord } from '@opendrive/shared';
 import { Icon } from '../components/Icon.js';
-import type { ApiClient } from '../lib/api/client.js';
+import { API_BASE_URL, type ApiClient } from '../lib/api/client.js';
 import { describeFailure } from '../lib/api/errors.js';
 import { familyOf } from '../lib/files/kind.js';
-import { VideoPlayer } from './VideoPlayer.js';
+import { VideoPlayer, type VideoSource } from './VideoPlayer.js';
 
 /**
  * Inline preview for one file.
@@ -26,12 +26,30 @@ import { VideoPlayer } from './VideoPlayer.js';
 
 type PreviewState =
   | { status: 'loading' }
-  | { status: 'image' | 'video' | 'audio'; url: string }
+  | { status: 'image' | 'audio'; url: string }
+  | { status: 'video'; url: string; sources: VideoSource[] }
   | { status: 'text'; body: string }
   | { status: 'unavailable'; detail: string };
 
 /** Only read a text file into the tab when it is small enough to be text and not a data dump. */
 const TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Resolve a rendition URL the same way the API client resolves its base URL.
+ *
+ * The rendition route stores whatever URL a client registered, so it may be absolute or rooted at
+ * the API origin. Only plain HTTP(S) sources are offered to the player; anything else (`javascript:`,
+ * a data URL) is dropped rather than handed to a media element.
+ */
+function resolveMediaUrl(value: string): string | null {
+  try {
+    const base = API_BASE_URL === '' ? window.location.origin : API_BASE_URL;
+    const url = new URL(value, base);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
+}
 
 export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord }) {
   const [state, setState] = useState<PreviewState>({ status: 'loading' });
@@ -51,7 +69,26 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
     void (async () => {
       try {
         const family = familyOf(file.mimeType, file.filename);
-        if (family === 'image' || family === 'video' || family === 'audio') {
+        if (family === 'video') {
+          // A video may also have alternate renditions. Asking for them is best-effort: a 404 or a
+          // deployment that never registered one must not stop the original from playing.
+          const [grant, renditions] = await Promise.all([
+            api.createDeliveryUrl(file.id, controller.signal),
+            api.listRenditions(file.id, controller.signal).catch(() => []),
+          ]);
+          if (!cancelled) {
+            const sources: VideoSource[] = [];
+            for (const rendition of renditions) {
+              const url = resolveMediaUrl(rendition.url);
+              if (url !== null && rendition.label.trim() !== '') {
+                sources.push({ label: rendition.label, url });
+              }
+            }
+            setState({ status: 'video', url: grant.url, sources });
+          }
+          return;
+        }
+        if (family === 'image' || family === 'audio') {
           const grant = await api.createDeliveryUrl(file.id, controller.signal);
           if (!cancelled) setState({ status: family, url: grant.url });
           return;
@@ -95,7 +132,15 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
       {state.status === 'image' && (
         <img className="preview__image" src={state.url} alt={file.filename} />
       )}
-      {state.status === 'video' && <VideoPlayer src={state.url} isMpegTs={isMpegTs} />}
+      {state.status === 'video' && (
+        <VideoPlayer
+          src={state.url}
+          isMpegTs={isMpegTs}
+          title={file.filename}
+          sources={state.sources}
+          downloadName={file.filename}
+        />
+      )}
       {state.status === 'audio' && (
         <audio className="preview__audio" src={state.url} controls preload="metadata" />
       )}
@@ -107,7 +152,21 @@ export function FilePreview({ api, file }: { api: ApiClient; file: FileRecord })
         </p>
       )}
 
-      {(state.status === 'image' || state.status === 'video' || state.status === 'audio') && (
+      {state.status === 'video' && (
+        <a
+          className="preview__open"
+          href={`/watch?${new URLSearchParams({
+            src: state.url,
+            title: file.filename,
+            ...(isMpegTs ? { mpegts: '1' } : {}),
+          }).toString()}`}
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          Open in a new tab
+        </a>
+      )}
+      {(state.status === 'image' || state.status === 'audio') && (
         <a className="preview__open" href={state.url} target="_blank" rel="noreferrer noopener">
           Open in a new tab
         </a>

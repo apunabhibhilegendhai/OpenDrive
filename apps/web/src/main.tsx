@@ -14,6 +14,7 @@ import './styles/tokens.css';
 import './styles/base.css';
 import './styles/shell.css';
 import './styles/files.css';
+import './styles/player.css';
 import './styles/upload.css';
 import './styles/dialogs.css';
 import './styles/auth.css';

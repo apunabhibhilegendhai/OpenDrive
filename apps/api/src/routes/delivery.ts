@@ -14,6 +14,7 @@ import { findFileById, findFileByIdForAccessCheck } from '../db/repositories/fil
 import { findActiveStorageObjectByFileId } from '../db/repositories/storage-objects.js';
 import { effectiveMimeTypeForFile, isInlinePreviewable } from '../mime.js';
 import { requestIdentity } from '../plugins/identity.js';
+import { INLINE_PREVIEW_CSP } from '../security.js';
 import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
 import { parseRangeHeader } from './range.js';
@@ -55,6 +56,10 @@ const cdnQuerySchema = z.object({
     .max(512)
     .optional()
     .describe('Signed, expiring token minted by `POST /files/:fileId/delivery-url`.'),
+  download: z
+    .enum(['1'])
+    .optional()
+    .describe('Force a download even for a type the browser could render inline.'),
 });
 
 /**
@@ -264,16 +269,20 @@ export const deliveryRoutes: FastifyPluginAsyncZod<AppServices> = async (app, se
 
       const read = await provider.openReadStream(object.ref, requested ?? undefined);
       const servedType = effectiveMimeTypeForFile(file.mimeType, file.originalFilename);
+      const inlinePreviewable = isInlinePreviewable(file.mimeType, file.originalFilename);
       void reply.header('content-type', servedType);
       void reply.header('content-length', String(read.length));
       void reply.header(
         'content-disposition',
-        contentDisposition(file.originalFilename, servedType),
+        contentDisposition(file.originalFilename, servedType, {
+          forceAttachment: request.query.download === '1',
+        }),
       );
-      if (isInlinePreviewable(file.mimeType, file.originalFilename)) {
+      if (inlinePreviewable) {
         // Only now that the response is certain to be bytes: an inline-safe type may be embedded
-        // from another origin, everything else keeps the default same-origin policy.
+        // from another origin, and may be opened directly as its own media document.
         void reply.header('cross-origin-resource-policy', 'cross-origin');
+        void reply.header('content-security-policy', INLINE_PREVIEW_CSP);
       }
       if (read.range !== null) {
         void reply.header(

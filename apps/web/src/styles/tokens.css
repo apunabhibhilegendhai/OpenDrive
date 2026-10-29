@@ -47,6 +47,18 @@
   --hatch: rgba(20, 18, 14, 0.16);
   --dust: rgba(20, 18, 14, 0.05);
   --scrim: rgba(20, 18, 14, 0.42);
+  /* The video player is a dark theatre in both themes: video is judged against a neutral ground,
+     not against chart paper, and the controls sit on top of the picture. */
+  --player-bg: #070b0f;
+  --player-ink: #f5f2ea;
+  --player-muted: #b9c2c9;
+  --player-accent: #ff6244;
+  --player-track: #39434b;
+  --player-buffered: #78848e;
+  --player-scrim: rgba(7, 11, 15, 0.86);
+  --player-scrim-soft: rgba(7, 11, 15, 0.5);
+  --player-hover: rgba(245, 242, 234, 0.14);
+  --player-edge: rgba(245, 242, 234, 0.22);
   /* The chart-table layer: drawn, tinted, and always faint enough to sit under long text. */
   --chartline: rgba(20, 18, 14, 0.13);
   --chartline-soft: rgba(20, 18, 14, 0.07);
@@ -132,6 +144,16 @@
   --hatch: rgba(233, 238, 242, 0.18);
   --dust: rgba(233, 238, 242, 0.06);
   --scrim: rgba(4, 9, 14, 0.6);
+  --player-bg: #070b0f;
+  --player-ink: #f5f2ea;
+  --player-muted: #b9c2c9;
+  --player-accent: #ff6244;
+  --player-track: #39434b;
+  --player-buffered: #78848e;
+  --player-scrim: rgba(7, 11, 15, 0.86);
+  --player-scrim-soft: rgba(7, 11, 15, 0.5);
+  --player-hover: rgba(245, 242, 234, 0.14);
+  --player-edge: rgba(245, 242, 234, 0.22);
   /* Night Voyage needs a stronger line and a stronger instrument to survive the dark paper. */
   --chartline: rgba(233, 238, 242, 0.16);
   --chartline-soft: rgba(233, 238, 242, 0.08);

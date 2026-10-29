@@ -17,6 +17,21 @@ const DOCS_CSP =
 
 const STRICT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
 
+/**
+ * Policy for a byte response a browser may open as a document of its own.
+ *
+ * Navigating straight to an image, audio or video URL makes the browser synthesize a document
+ * whose only content is an `<img>`/`<video>` pointing back at the same URL. Under the strict
+ * `default-src 'none'` policy that nested load is blocked, so the tab reports "Unable to play
+ * media" even though the bytes and the range support are perfectly fine. Allowing same-origin
+ * image and media loads is the smallest relaxation that lets the generated document render.
+ *
+ * Only routes that already decided the body is inline-previewable set this header; every other
+ * response keeps {@link STRICT_CSP}.
+ */
+export const INLINE_PREVIEW_CSP =
+  "default-src 'none'; img-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'";
+
 function isDocsRoute(url: string, docsPrefix: string): boolean {
   return url.startsWith(docsPrefix);
 }

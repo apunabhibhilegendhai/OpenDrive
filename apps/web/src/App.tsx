@@ -6,6 +6,7 @@ import { DriveRoute } from './routes/DriveRoute.js';
 import { SharesRoute } from './routes/SharesRoute.js';
 import { SignInRoute } from './routes/SignInRoute.js';
 import { StatusRoute } from './routes/StatusRoute.js';
+import { WatchRoute } from './routes/WatchRoute.js';
 
 /**
  * Route table.
@@ -35,6 +36,9 @@ export function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/drive" replace />} />
       <Route path="/signin" element={<SignInRoute />} />
+      {/* Public: a delivery URL is its own short-lived credential, so a watch link works without
+          asking a signed-out visitor for a session. */}
+      <Route path="/watch" element={<WatchRoute />} />
       <Route
         path="/drive"
         element={

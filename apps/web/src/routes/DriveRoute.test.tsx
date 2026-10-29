@@ -464,6 +464,41 @@ describe('preview', () => {
     expect(await screen.findByRole('link', { name: /open in a new tab/i })).toBeTruthy();
   });
 
+  it('opens a video in the watch player instead of a raw media tab', async () => {
+    const routes: FakeRoute[] = [
+      ...defaultRoutes({ files: [fileFixture({ filename: 'clip.mp4', mimeType: 'video/mp4' })] }),
+      {
+        method: 'POST',
+        path: DELIVERY_PATH,
+        respond: () => ({
+          status: 200,
+          body: {
+            path: '/cdn/file_00000000000000000000000001/sobj_00000000000000000000000001?token=abc.def',
+            url: 'http://localhost/cdn/file_00000000000000000000000001/sobj_00000000000000000000000001?token=abc.def',
+            expiresAt: '2026-10-12T13:00:00.000Z',
+          },
+        }),
+      },
+    ];
+    renderApp({ session: sessionFixture(), routes });
+
+    await settle(() => screen.findByText('clip.mp4'));
+    fireEvent.click(screen.getByRole('button', { name: 'clip.mp4' }));
+
+    const link = await screen.findByRole('link', { name: /open in a new tab/i });
+    const href = link.getAttribute('href') ?? '';
+    expect(href.startsWith('/watch?')).toBe(true);
+
+    const query = new URLSearchParams(href.split('?')[1] ?? '');
+    // The client composes the delivery URL against its own base: same-origin in the test harness,
+    // the absolute API origin in a split deployment.
+    expect(query.get('src')).toBe(
+      '/cdn/file_00000000000000000000000001/sobj_00000000000000000000000001?token=abc.def',
+    );
+    expect(query.get('title')).toBe('clip.mp4');
+    expect(query.get('mpegts')).toBeNull();
+  });
+
   it('shows a small text file read through the authenticated client', async () => {
     const routes: FakeRoute[] = [
       ...defaultRoutes({

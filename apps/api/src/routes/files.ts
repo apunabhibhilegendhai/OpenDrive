@@ -30,6 +30,7 @@ import { contentDisposition } from '../content-disposition.js';
 import { effectiveMimeTypeForFile, isInlinePreviewable } from '../mime.js';
 import { decodeCursor } from '../pagination.js';
 import { requestIdentity } from '../plugins/identity.js';
+import { INLINE_PREVIEW_CSP } from '../security.js';
 import type { AppServices } from '../services.js';
 import { requireStorageProvider } from '../storage/registry.js';
 import { parseRangeHeader } from './range.js';
@@ -242,6 +243,12 @@ export const fileRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servic
         // Only now that the response is certain to be bytes rather than a problem document, mark
         // the resource embeddable from another origin. An error keeps the default same-origin.
         void reply.header('cross-origin-resource-policy', 'cross-origin');
+      }
+      if (isInlinePreviewable(file.mimeType, file.originalFilename)) {
+        // A preview token is meant to be opened directly, too. Chrome wraps a top-level media
+        // response in a generated document whose own <img>/<video> load is a subresource; the
+        // strict default policy would block it. See INLINE_PREVIEW_CSP.
+        void reply.header('content-security-policy', INLINE_PREVIEW_CSP);
       }
       if (read.range !== null) {
         void reply.header(

@@ -511,8 +511,7 @@
   background: var(--surface-sunken);
 }
 
-.preview__image,
-.preview__video {
+.preview__image {
   display: block;
   width: 100%;
   max-height: 360px;

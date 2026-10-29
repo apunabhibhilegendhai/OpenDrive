@@ -182,6 +182,24 @@ describe('cacheable delivery URLs', () => {
     expect(response.headers.etag).toBeTruthy();
   });
 
+  it('lets a browser open a video directly and can force a real download', async () => {
+    const account = await createAccount(h.sql);
+    const bytes = Buffer.from('not-really-an-mp4-but-the-type-is-what-matters');
+    const { fileId } = await uploadOnePart(h, account.token, 'clip.mp4', bytes, 'video/mp4');
+    const grant = deliveryGrantSchema.parse((await mintDelivery(h, account.token, fileId)).json());
+
+    const inline = await h.server.inject({ method: 'GET', url: grant.path });
+    expect(inline.statusCode).toBe(200);
+    // Chrome synthesizes a media document for a top-level video URL; without media-src it blocks
+    // its own <video> load and reports "Unable to play media".
+    expect(inline.headers['content-security-policy']).toContain("media-src 'self'");
+    expect(inline.headers['content-disposition']).toMatch(/^inline;/);
+
+    const download = await h.server.inject({ method: 'GET', url: `${grant.path}&download=1` });
+    expect(download.statusCode).toBe(200);
+    expect(download.headers['content-disposition']).toMatch(/^attachment;/);
+  });
+
   it('serves the second read from the cache without touching the provider', async () => {
     const account = await createAccount(h.sql);
     const bytes = Buffer.from('the-second-read-is-cheap');

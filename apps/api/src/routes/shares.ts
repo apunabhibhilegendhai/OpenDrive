@@ -21,7 +21,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { REQUIRED_SCOPES, assertFileOwnership, ownerKeyOf, requireScope } from '../authz.js';
 import { contentDisposition } from '../content-disposition.js';
-import { effectiveMimeTypeForFile } from '../mime.js';
+import { effectiveMimeTypeForFile, isInlinePreviewable } from '../mime.js';
 import { toFileRecord, toShareRecord } from '../db/mappers.js';
 import type { FileEntity, ShareEntity } from '../db/entities.js';
 import { findFileById, findFileByIdForAccessCheck } from '../db/repositories/files.js';
@@ -38,6 +38,7 @@ import {
   recordAuditEventBestEffort,
 } from '../db/repositories/audit.js';
 import { requestIdentity } from '../plugins/identity.js';
+import { INLINE_PREVIEW_CSP } from '../security.js';
 import type { AppServices } from '../services.js';
 import {
   SHARE_PAGE_CSP,
@@ -432,6 +433,11 @@ export const shareRoutes: FastifyPluginAsyncZod<AppServices> = async (app, servi
         contentDisposition(file.originalFilename, servedType),
       );
       void reply.header('cache-control', 'private, no-store');
+      if (isInlinePreviewable(file.mimeType, file.originalFilename)) {
+        // The share page embeds this URL in its own <img>/<video>. Navigating to it directly
+        // produces the same generated media document, so it needs the media-safe policy too.
+        void reply.header('content-security-policy', INLINE_PREVIEW_CSP);
+      }
       if (read.range !== null) {
         void reply.header(
           'content-range',

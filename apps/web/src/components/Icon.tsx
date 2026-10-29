@@ -34,7 +34,17 @@ export type IconName =
   | 'shield'
   | 'external'
   | 'sign-out'
-  | 'user';
+  | 'user'
+  | 'play'
+  | 'pause'
+  | 'rewind'
+  | 'forward'
+  | 'volume'
+  | 'volume-off'
+  | 'fullscreen'
+  | 'exit-fullscreen'
+  | 'pip'
+  | 'settings';
 
 const PATHS: Record<IconName, { d: string; fill?: boolean }[]> = {
   compass: [{ d: 'M12 3.2 13.9 10l6.1 2-6.1 2-1.9 6.8L10.1 14 4 12l6.1-2Z' }],
@@ -72,6 +82,19 @@ const PATHS: Record<IconName, { d: string; fill?: boolean }[]> = {
   external: [{ d: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6' }],
   'sign-out': [{ d: 'M15 4h4v16h-4M11 8l-4 4 4 4M7 12h9' }],
   user: [{ d: 'M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8ZM4 21c0-4 3.6-7 8-7s8 3 8 7' }],
+  play: [{ d: 'M8 4.8 19 12 8 19.2Z' }],
+  pause: [{ d: 'M9 5v14M15 5v14' }],
+  rewind: [{ d: 'M11 6 5 12l6 6M19 6l-6 6 6 6' }],
+  forward: [{ d: 'M13 6l6 6-6 6M5 6l6 6-6 6' }],
+  volume: [
+    { d: 'M4 9h4l5-4v14l-5-4H4z' },
+    { d: 'M16.5 8.5a5 5 0 0 1 0 7M19.2 6a8.5 8.5 0 0 1 0 12' },
+  ],
+  'volume-off': [{ d: 'M4 9h4l5-4v14l-5-4H4zM17 9l4 6M21 9l-4 6' }],
+  fullscreen: [{ d: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5' }],
+  'exit-fullscreen': [{ d: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5' }],
+  pip: [{ d: 'M3 5h18v14H3zM12 12h7v5h-7z' }],
+  settings: [{ d: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 4v6M9 14v6' }],
 };
 
 export function Icon({
